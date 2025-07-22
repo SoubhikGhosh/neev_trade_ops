@@ -231,11 +231,21 @@ async def process_zip_file_async(job_id: str, zip_file_path: str, job_statuses: 
             zip_ref.extractall(temp_dir)
         log.info(f"Job {job_id}: Extracted '{zip_file_path}'")
 
+        # Smartly determine the root directory containing case folders
+        extracted_items = list(temp_dir.iterdir())
+        processing_root = temp_dir
+        if len(extracted_items) == 1 and extracted_items[0].is_dir():
+            log.info(f"Detected a single root folder '{extracted_items[0].name}'. Using it as the processing root.")
+            processing_root = extracted_items[0]
+        else:
+            log.info("Multiple items found at root. Using extraction root directly.")
+
         tasks = []
         acceptable_types = list(DOCUMENT_FIELDS.keys()) + ["UNKNOWN"]
-        case_folders = [d for d in temp_dir.iterdir() if d.is_dir()]
+        case_folders = [d for d in processing_root.iterdir() if d.is_dir()]
         
-        if not case_folders: raise ValueError("No case folders found in the zip file.")
+        if not case_folders:
+            raise ValueError("No case folders found within the zip structure.")
 
         total_groups = sum(len(_group_files_by_base_name(cf)) for cf in case_folders)
         

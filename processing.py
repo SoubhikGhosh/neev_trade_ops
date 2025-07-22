@@ -256,9 +256,9 @@ async def process_zip_file_async(job_id: str, zip_file_path: str, job_statuses: 
         with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
             zip_ref.extractall(temp_dir)
         log.info(f"Job {job_id}: Extracted '{zip_file_path}'")
+
         log.info(f"Job {job_id}: Recursively searching for case folders...")
         
-        # Find all supported files recursively
         all_doc_files = []
         for ext in SUPPORTED_FILE_EXTENSIONS:
             all_doc_files.extend(temp_dir.rglob(f"*{ext.lower()}"))
@@ -266,6 +266,7 @@ async def process_zip_file_async(job_id: str, zip_file_path: str, job_statuses: 
 
         valid_doc_files = [f for f in all_doc_files if '__MACOSX' not in str(f.parent)]
         case_folders = sorted(list(set(f.parent for f in valid_doc_files)))
+        
         if not case_folders:
             raise ValueError("No case folders with processable documents (.pdf, .jpg, etc.) found in the zip file.")
 

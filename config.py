@@ -9,6 +9,7 @@ API_MODEL = os.getenv("API_MODEL", "gemini-2.5-flash")
 API_TIMEOUT = int(os.getenv("API_TIMEOUT", 120))
 API_MAX_RETRIES = int(os.getenv("API_MAX_RETRIES", 5))
 API_CONCURRENCY_LIMIT = int(os.getenv("API_CONCURRENCY_LIMIT", 10))
+API_BACKOFF_FACTOR = float(os.getenv("API_BACKOFF_FACTOR", 2.0))
 
 SUPPORTED_MIME_TYPES = {
     "application/pdf": "PDF",

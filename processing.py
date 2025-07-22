@@ -230,23 +230,27 @@ async def process_zip_file_async(job_id: str, zip_file_path: str, job_statuses: 
         with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
             zip_ref.extractall(temp_dir)
         log.info(f"Job {job_id}: Extracted '{zip_file_path}'")
+        log.info(f"Job {job_id}: Recursively searching for case folders...")
+        
+        # Find all supported files recursively
+        all_doc_files = []
+        for ext in SUPPORTED_FILE_EXTENSIONS:
+            all_doc_files.extend(temp_dir.rglob(f"*{ext.lower()}"))
+            all_doc_files.extend(temp_dir.rglob(f"*{ext.upper()}"))
 
-        # Smartly determine the root directory containing case folders
-        extracted_items = list(temp_dir.iterdir())
-        processing_root = temp_dir
-        if len(extracted_items) == 1 and extracted_items[0].is_dir():
-            log.info(f"Detected a single root folder '{extracted_items[0].name}'. Using it as the processing root.")
-            processing_root = extracted_items[0]
-        else:
-            log.info("Multiple items found at root. Using extraction root directly.")
+        valid_doc_files = [
+            f for f in all_doc_files if '__MACOSX' not in str(f.parent)
+        ]
+
+        # The case folders are the unique parent directories of these files
+        case_folders = sorted(list(set(f.parent for f in valid_doc_files)))
+        if not case_folders:
+            raise ValueError("No case folders with processable documents (.pdf, .jpg, etc.) found in the zip file.")
+
+        log.info(f"Job {job_id}: Found {len(case_folders)} case folder(s): {[cf.name for cf in case_folders]}")
 
         tasks = []
-        acceptable_types = list(DOCUMENT_FIELDS.keys()) + ["UNKNOWN"]
-        case_folders = [d for d in processing_root.iterdir() if d.is_dir()]
-        
-        if not case_folders:
-            raise ValueError("No case folders found within the zip structure.")
-
+        acceptable_types = list(DOCUMENT_FIELDS.keys()) + ["UNKNOWN"]     
         total_groups = sum(len(_group_files_by_base_name(cf)) for cf in case_folders)
         
         job.status = "Processing"

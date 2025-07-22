@@ -54,8 +54,11 @@ def _prepare_document_files(document_files: List[Dict]) -> List[Dict]:
     document_files.sort(key=lambda x: x["page"])
     return document_files
 
-def _parse_llm_json_response(raw_text: str, context: str, schema: Type[BaseModel]) -> Dict:
-    """Parses and validates a JSON-like response from the LLM against a Pydantic schema."""
+def _parse_llm_json_response(raw_text: str, context: str, schema: Type[BaseModel], expected_field_names: List[str]) -> Dict:
+    """
+    Parses and validates a JSON-like response from the LLM,
+    and normalizes keys by converting underscores back to spaces before validation.
+    """
     processed_text = raw_text.strip()
     if processed_text.startswith("```json"):
         processed_text = processed_text[7:-3].strip()
@@ -64,8 +67,20 @@ def _parse_llm_json_response(raw_text: str, context: str, schema: Type[BaseModel
 
     try:
         data_dict = json5.loads(processed_text)
-        validated_data = schema.model_validate(data_dict)
+
+        # Create a map from sanitized (underscore) keys to original (space) keys
+        sanitized_key_map = {name.replace(' ', '_'): name for name in expected_field_names}
+        
+        normalized_dict = {}
+        for key, value in data_dict.items():
+            # If the key from the LLM is a sanitized version, use the original name
+            # Otherwise, use the key as-is
+            original_key = sanitized_key_map.get(key, key)
+            normalized_dict[original_key] = value
+
+        validated_data = schema.model_validate(normalized_dict)
         return validated_data.model_dump()
+        
     except ValidationError as e:
         log.error(f"Pydantic validation failed for {context}. Errors:\n{e.errors()}")
         return {"error": "Pydantic Validation Error", "details": e.errors(), "raw_response": processed_text}
@@ -75,7 +90,7 @@ def _parse_llm_json_response(raw_text: str, context: str, schema: Type[BaseModel
 
 async def _correct_json_with_llm(
     malformed_json_text: str, parsing_error: str, original_prompt: str, 
-    context: str, schema: Type[BaseModel], correction_attempts_left: int
+    context: str, schema: Type[BaseModel], correction_attempts_left: int, expected_field_names: List[str]
 ) -> Tuple[Dict, str]:
     """Calls the LLM via API to correct a malformed JSON response."""
     if correction_attempts_left <= 0:
@@ -92,12 +107,13 @@ Please correct the malformed text to be a perfectly valid JSON object matching t
 """
     try:
         corrected_text = await api_client.call_llm_api(prompt_text=correction_prompt)
-        parsed_data = _parse_llm_json_response(corrected_text, f"{context} (Correction Attempt)", schema)
+        # Pass the expected field names to the parser during correction as well
+        parsed_data = _parse_llm_json_response(corrected_text, f"{context} (Correction Attempt)", schema, expected_field_names)
 
         if "error" in parsed_data:
             return await _correct_json_with_llm(
                 corrected_text, str(parsed_data.get("details")), original_prompt, 
-                context, schema, correction_attempts_left - 1
+                context, schema, correction_attempts_left - 1, expected_field_names
             )
         return parsed_data, corrected_text
     except Exception as e:
@@ -125,7 +141,9 @@ async def _classify_document_type(job_id: str, case_id: str, base_name: str, doc
         acceptable_types_str="\n".join([f"- {atype}" for atype in acceptable_types])
     )
     response_text = await api_client.call_llm_api(prompt, sorted_docs)
-    return _parse_llm_json_response(response_text, context, ClassificationResponse)
+    # Define the expected field names for the classification schema
+    classification_fields = ["classified_type", "confidence", "reasoning"]
+    return _parse_llm_json_response(response_text, context, ClassificationResponse, classification_fields)
 
 async def _extract_data_from_document(
     job_id: str, case_id: str, base_name: str, document_files: List[Dict], classified_doc_type: str, 
@@ -139,6 +157,9 @@ async def _extract_data_from_document(
     original_prompt = EXTRACTION_PROMPT_TEMPLATE.format(
         doc_type=classified_doc_type, case_id=case_id, num_pages=len(sorted_docs), field_list_str=field_list_str
     )
+    
+    # Get the list of original field names for the key normalization step
+    expected_field_names = [f['name'] for f in fields_to_extract]
 
     best_field_extractions = {}
     current_attempt = 0
@@ -146,13 +167,13 @@ async def _extract_data_from_document(
         log.info(f"Extraction attempt {current_attempt + 1}/{EXTRACTION_MAX_ATTEMPTS} for {context}")
         
         response_text = await api_client.call_llm_api(original_prompt, sorted_docs)
-        extracted_data = _parse_llm_json_response(response_text, context, extraction_schema)
+        extracted_data = _parse_llm_json_response(response_text, context, extraction_schema, expected_field_names)
 
         if "error" in extracted_data:
             if "Validation Error" in extracted_data.get("error", "") or "Decode Error" in extracted_data.get("error", ""):
                 corrected_data, _ = await _correct_json_with_llm(
                     extracted_data.get("raw_response", ""), str(extracted_data.get("details")), original_prompt,
-                    context, extraction_schema, JSON_CORRECTION_ATTEMPTS
+                    context, extraction_schema, JSON_CORRECTION_ATTEMPTS, expected_field_names
                 )
                 if "error" in corrected_data:
                     current_attempt += 1; continue
@@ -162,7 +183,7 @@ async def _extract_data_from_document(
 
         all_fields_confident = True
         for field_name, field_data in extracted_data.items():
-            if field_name not in [f['name'] for f in fields_to_extract]: continue
+            if field_name not in expected_field_names: continue
             if field_data['value'] is not None:
                 if field_name not in best_field_extractions or field_data['confidence'] > best_field_extractions.get(field_name, {}).get('confidence', -1.0):
                     best_field_extractions[field_name] = field_data

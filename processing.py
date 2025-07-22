@@ -5,8 +5,6 @@ import asyncio
 import re
 import json
 import json5
-import random
-import time
 from pathlib import Path
 import pandas as pd
 from collections import defaultdict
@@ -15,9 +13,8 @@ from typing import Dict, List, Tuple, Any, Type
 from pydantic import BaseModel, ValidationError
 
 from config import (
-    DOCUMENT_FIELDS, TEMP_DIR, OUTPUT_FILENAME,
-    SUPPORTED_FILE_EXTENSIONS, EXCEL_COLUMN_ORDER,
-    DEFAULT_CONFIDENCE_THRESHOLD, EXTRACTION_MAX_ATTEMPTS, JSON_CORRECTION_ATTEMPTS
+    DOCUMENT_FIELDS, TEMP_DIR,
+    SUPPORTED_FILE_EXTENSIONS, EXCEL_COLUMN_ORDER, JSON_CORRECTION_ATTEMPTS
 )
 from prompts import EXTRACTION_PROMPT_TEMPLATE, CLASSIFICATION_PROMPT_TEMPLATE
 from utils import log, parse_filename_for_grouping
@@ -55,10 +52,7 @@ def _prepare_document_files(document_files: List[Dict]) -> List[Dict]:
     return document_files
 
 def _parse_llm_json_response(raw_text: str, context: str, schema: Type[BaseModel], expected_field_names: List[str]) -> Dict:
-    """
-    Parses and validates a JSON-like response from the LLM,
-    and normalizes keys by sanitizing them before validation.
-    """
+    """Parses and validates a JSON-like response, normalizing keys before validation."""
     processed_text = raw_text.strip()
     if processed_text.startswith("```json"):
         processed_text = processed_text[7:-3].strip()
@@ -78,12 +72,8 @@ def _parse_llm_json_response(raw_text: str, context: str, schema: Type[BaseModel
         normalized_dict = {}
         for llm_key, value in data_dict.items():
             sanitized_llm_key = sanitize_key(llm_key)
-            original_key = sanitized_key_map.get(sanitized_llm_key)
-            
-            if original_key:
-                normalized_dict[original_key] = value
-            else:
-                normalized_dict[llm_key] = value
+            original_key = sanitized_key_map.get(sanitized_llm_key, llm_key)
+            normalized_dict[original_key] = value
 
         validated_data = schema.model_validate(normalized_dict)
         return validated_data.model_dump()
@@ -155,54 +145,79 @@ async def _extract_data_from_document(
     job_id: str, case_id: str, base_name: str, document_files: List[Dict], classified_doc_type: str, 
     fields_to_extract: List[Dict], extraction_schema: Type[BaseModel]
 ) -> Dict[str, Any]:
+    """
+    Performs an extraction with an intelligent, targeted re-ask for missing fields.
+    """
     context = f"Job:{job_id}|Case:{case_id}|Group:'{base_name}'(Extraction)"
-    log.info(f"Starting extraction for {context}")
+    log.info(f"Starting initial extraction attempt for {context}")
 
     sorted_docs = _prepare_document_files(document_files)
-    field_list_str = "\n".join([f"- **{f['name']}**: {f['description']}" for f in fields_to_extract])
-    original_prompt = EXTRACTION_PROMPT_TEMPLATE.format(
-        doc_type=classified_doc_type, case_id=case_id, num_pages=len(sorted_docs), field_list_str=field_list_str
+    initial_field_list_str = "\n".join([f"- **{f['name']}**: {f['description']}" for f in fields_to_extract])
+    initial_prompt = EXTRACTION_PROMPT_TEMPLATE.format(
+        doc_type=classified_doc_type, case_id=case_id, num_pages=len(sorted_docs), field_list_str=initial_field_list_str
     )
     
     expected_field_names = [f['name'] for f in fields_to_extract]
 
-    best_field_extractions = {}
-    current_attempt = 0
-    while current_attempt < EXTRACTION_MAX_ATTEMPTS:
-        log.info(f"Extraction attempt {current_attempt + 1}/{EXTRACTION_MAX_ATTEMPTS} for {context}")
+    # --- Step 1: Initial Extraction Attempt ---
+    response_text = await api_client.call_llm_api(initial_prompt, sorted_docs)
+    extraction_result = _parse_llm_json_response(response_text, context, extraction_schema, expected_field_names)
+
+    if "error" in extraction_result:
+        if "Validation Error" in extraction_result.get("error", "") or "Decode Error" in extraction_result.get("error", ""):
+            log.warning(f"Initial parsing/validation failed for {context}. Attempting LLM-based correction.")
+            corrected_data, _ = await _correct_json_with_llm(
+                extraction_result.get("raw_response", ""), str(extraction_result.get("details")), initial_prompt,
+                context, extraction_schema, JSON_CORRECTION_ATTEMPTS, expected_field_names
+            )
+            extraction_result = corrected_data
         
-        response_text = await api_client.call_llm_api(original_prompt, sorted_docs)
-        extracted_data = _parse_llm_json_response(response_text, context, extraction_schema, expected_field_names)
+        if "error" in extraction_result:
+             log.error(f"Initial extraction for {context} failed after parsing/correction. Error: {extraction_result.get('error')}")
+             return {"_overall_status": extraction_result}
 
-        if "error" in extracted_data:
-            if "Validation Error" in extracted_data.get("error", "") or "Decode Error" in extracted_data.get("error", ""):
-                corrected_data, _ = await _correct_json_with_llm(
-                    extracted_data.get("raw_response", ""), str(extracted_data.get("details")), original_prompt,
-                    context, extraction_schema, JSON_CORRECTION_ATTEMPTS, expected_field_names
-                )
-                if "error" in corrected_data:
-                    current_attempt += 1; continue
-                extracted_data = corrected_data
-            else:
-                best_field_extractions["_overall_status"] = extracted_data; break
+    # --- Step 2: Identify Missing Fields ---
+    missing_fields = []
+    for field_name, value in extraction_result.items():
+        if value is None and field_name in expected_field_names:
+            missing_fields.append(field_name)
 
-        all_fields_confident = True
-        for field_name, field_data in extracted_data.items():
-            if field_name not in expected_field_names: continue
-            if field_data['value'] is not None:
-                if field_name not in best_field_extractions or field_data['confidence'] > best_field_extractions.get(field_name, {}).get('confidence', -1.0):
-                    best_field_extractions[field_name] = field_data
-            if field_data['value'] is None or field_data['confidence'] < DEFAULT_CONFIDENCE_THRESHOLD:
-                all_fields_confident = False
+    # --- Step 3: Targeted Re-Ask (if necessary) ---
+    if missing_fields:
+        log.warning(f"{len(missing_fields)} fields were missing for {context}. Performing a targeted re-ask.")
+        
+        missing_fields_definitions = [f for f in fields_to_extract if f['name'] in missing_fields]
+        reask_field_list_str = "\n".join([f"- **{f['name']}**: {f['description']}" for f in missing_fields_definitions])
+        
+        reask_prompt = f"""
+        You are an AI assistant helping to complete a data extraction task.
+        In a previous step for Case ID '{case_id}', the following fields were missed or not found in the provided document.
+        Please re-examine the document pages ({len(sorted_docs)} pages) and extract ONLY the following fields.
+        It is critical that you return a value for every field listed below, even if it is null.
 
-        if all_fields_confident:
-            best_field_extractions.update(extracted_data); break
-        current_attempt += 1
+        **Fields to Extract:**
+        {reask_field_list_str}
 
-    final_results = best_field_extractions
-    if "_overall_status" in final_results: return final_results["_overall_status"]
-    final_results["_extraction_status"] = "Success" if current_attempt < EXTRACTION_MAX_ATTEMPTS else "Partial Success"
-    return final_results
+        **Output Requirements (Strict):**
+        - Return ONLY a single, valid JSON object.
+        - The JSON object must have keys that correspond EXACTLY to the field names listed above.
+        - Each value must be an object with "value", "confidence", and "reasoning".
+        """
+        
+        reask_response_text = await api_client.call_llm_api(reask_prompt, sorted_docs)
+        reask_result = _parse_llm_json_response(reask_response_text, f"{context} (Re-ask)", extraction_schema, missing_fields)
+
+        if "error" not in reask_result:
+            log.info(f"Successfully merged results from targeted re-ask for {context}.")
+            for field_name, value in reask_result.items():
+                if value is not None:
+                    extraction_result[field_name] = value
+        else:
+            log.error(f"Targeted re-ask for {context} also failed. Proceeding with incomplete data.")
+
+    extraction_result["_extraction_status"] = "Success" if not missing_fields else "Partial Success (After Re-ask)"
+    return extraction_result
+
 
 async def process_case_group(job_id: str, task_args: tuple):
     case_id, base_name, document_files, acceptable_types = task_args
@@ -230,17 +245,22 @@ async def process_case_group(job_id: str, task_args: tuple):
         job_id, case_id, base_name, document_files, classified_type, fields_to_extract, extraction_schema
     )
 
-    if "error" in extraction_result:
-        result_row["Processing_Status"] = f"Extraction Failed: {extraction_result.get('error')}"
+    if "_overall_status" in extraction_result and extraction_result["_overall_status"].get("error"):
+        result_row["Processing_Status"] = f"Extraction Failed: {extraction_result['_overall_status'].get('error')}"
     else:
         result_row["Processing_Status"] = extraction_result.get("_extraction_status", "Success")
         for field in fields_to_extract:
             field_name = field['name']
-            field_data = extraction_result.get(field_name, {})
+            field_data = extraction_result.get(field_name)
             prefix = f"{classified_type}_{field_name}"
-            result_row[f"{prefix}_Value"] = str(field_data.get('value')) if field_data.get('value') is not None else None
-            result_row[f"{prefix}_Confidence"] = field_data.get('confidence')
-            result_row[f"{prefix}_Reasoning"] = field_data.get('reasoning')
+            if field_data:
+                result_row[f"{prefix}_Value"] = str(field_data.get('value')) if field_data.get('value') is not None else None
+                result_row[f"{prefix}_Confidence"] = field_data.get('confidence')
+                result_row[f"{prefix}_Reasoning"] = field_data.get('reasoning')
+            else:
+                result_row[f"{prefix}_Value"] = None
+                result_row[f"{prefix}_Confidence"] = 0.0
+                result_row[f"{prefix}_Reasoning"] = "Field was not returned by the LLM."
     return result_row
 
 async def process_zip_file_async(job_id: str, zip_file_path: str, job_statuses: Dict[str, JobStatus]) -> str:

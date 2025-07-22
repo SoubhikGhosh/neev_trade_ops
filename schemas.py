@@ -24,9 +24,13 @@ class ClassificationResponse(BaseModel):
     reasoning: str
 
 def create_extraction_model(doc_type: str, fields: List[Dict]) -> Type[BaseModel]:
-    """Dynamically creates a Pydantic model for a given document type's extraction fields."""
+    """
+    Dynamically creates a Pydantic model where all fields are OPTIONAL.
+    This prevents validation errors if the LLM omits a field.
+    """
     field_definitions = {
-        field['name']: (FieldDetail, ...) for field in fields
+        # Each field is now Optional and defaults to None if not provided by the LLM.
+        field['name']: (Optional[FieldDetail], Field(default=None)) for field in fields
     }
     model_name = f"{doc_type.capitalize()}ExtractionModel"
     return create_model(model_name, **field_definitions)

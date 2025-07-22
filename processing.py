@@ -57,7 +57,7 @@ def _prepare_document_files(document_files: List[Dict]) -> List[Dict]:
 def _parse_llm_json_response(raw_text: str, context: str, schema: Type[BaseModel], expected_field_names: List[str]) -> Dict:
     """
     Parses and validates a JSON-like response from the LLM,
-    and normalizes keys by converting underscores back to spaces before validation.
+    and normalizes keys by sanitizing them before validation.
     """
     processed_text = raw_text.strip()
     if processed_text.startswith("```json"):
@@ -68,15 +68,22 @@ def _parse_llm_json_response(raw_text: str, context: str, schema: Type[BaseModel
     try:
         data_dict = json5.loads(processed_text)
 
-        # Create a map from sanitized (underscore) keys to original (space) keys
-        sanitized_key_map = {name.replace(' ', '_'): name for name in expected_field_names}
-        
+        def sanitize_key(key: str) -> str:
+            """Converts a key to a sanitized 'fingerprint'."""
+            s = re.sub(r'[^a-zA-Z0-9]+', '_', key)
+            return s.strip('_').upper()
+
+        sanitized_key_map = {sanitize_key(name): name for name in expected_field_names}
+
         normalized_dict = {}
-        for key, value in data_dict.items():
-            # If the key from the LLM is a sanitized version, use the original name
-            # Otherwise, use the key as-is
-            original_key = sanitized_key_map.get(key, key)
-            normalized_dict[original_key] = value
+        for llm_key, value in data_dict.items():
+            sanitized_llm_key = sanitize_key(llm_key)
+            original_key = sanitized_key_map.get(sanitized_llm_key)
+            
+            if original_key:
+                normalized_dict[original_key] = value
+            else:
+                normalized_dict[llm_key] = value
 
         validated_data = schema.model_validate(normalized_dict)
         return validated_data.model_dump()
@@ -87,6 +94,7 @@ def _parse_llm_json_response(raw_text: str, context: str, schema: Type[BaseModel
     except Exception as e:
         log.error(f"Failed to parse or validate for {context}: {e}")
         return {"error": "Parsing/Validation Error", "details": str(e), "raw_response": processed_text}
+
 
 async def _correct_json_with_llm(
     malformed_json_text: str, parsing_error: str, original_prompt: str, 
@@ -107,7 +115,6 @@ Please correct the malformed text to be a perfectly valid JSON object matching t
 """
     try:
         corrected_text = await api_client.call_llm_api(prompt_text=correction_prompt)
-        # Pass the expected field names to the parser during correction as well
         parsed_data = _parse_llm_json_response(corrected_text, f"{context} (Correction Attempt)", schema, expected_field_names)
 
         if "error" in parsed_data:
@@ -141,7 +148,6 @@ async def _classify_document_type(job_id: str, case_id: str, base_name: str, doc
         acceptable_types_str="\n".join([f"- {atype}" for atype in acceptable_types])
     )
     response_text = await api_client.call_llm_api(prompt, sorted_docs)
-    # Define the expected field names for the classification schema
     classification_fields = ["classified_type", "confidence", "reasoning"]
     return _parse_llm_json_response(response_text, context, ClassificationResponse, classification_fields)
 
@@ -158,7 +164,6 @@ async def _extract_data_from_document(
         doc_type=classified_doc_type, case_id=case_id, num_pages=len(sorted_docs), field_list_str=field_list_str
     )
     
-    # Get the list of original field names for the key normalization step
     expected_field_names = [f['name'] for f in fields_to_extract]
 
     best_field_extractions = {}
@@ -259,11 +264,7 @@ async def process_zip_file_async(job_id: str, zip_file_path: str, job_statuses: 
             all_doc_files.extend(temp_dir.rglob(f"*{ext.lower()}"))
             all_doc_files.extend(temp_dir.rglob(f"*{ext.upper()}"))
 
-        valid_doc_files = [
-            f for f in all_doc_files if '__MACOSX' not in str(f.parent)
-        ]
-
-        # The case folders are the unique parent directories of these files
+        valid_doc_files = [f for f in all_doc_files if '__MACOSX' not in str(f.parent)]
         case_folders = sorted(list(set(f.parent for f in valid_doc_files)))
         if not case_folders:
             raise ValueError("No case folders with processable documents (.pdf, .jpg, etc.) found in the zip file.")
@@ -271,7 +272,8 @@ async def process_zip_file_async(job_id: str, zip_file_path: str, job_statuses: 
         log.info(f"Job {job_id}: Found {len(case_folders)} case folder(s): {[cf.name for cf in case_folders]}")
 
         tasks = []
-        acceptable_types = list(DOCUMENT_FIELDS.keys()) + ["UNKNOWN"]     
+        acceptable_types = list(DOCUMENT_FIELDS.keys()) + ["UNKNOWN"]
+        
         total_groups = sum(len(_group_files_by_base_name(cf)) for cf in case_folders)
         
         job.status = "Processing"

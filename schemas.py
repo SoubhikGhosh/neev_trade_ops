@@ -21,20 +21,16 @@ class FieldDetail(BaseModel):
 
 class ClassificationResponse(BaseModel):
     """Defines the schema for the combined classification output from the LLM."""
-    image_description: str = Field(description="A one-sentence summary of the document's purpose.")
-    image_type: str = Field(description="A general classification, e.g., 'Request Letter', 'Invoice'.")
-    classified_type: str = Field(description="A strict internal type, e.g., 'CRL', 'INVOICE', 'UNKNOWN'.")
-    confidence: float = Field(ge=0.0, le=1.0, description="Confidence score for the 'classified_type'.")
-    reasoning: str = Field(description="Explanation for the 'classified_type' decision.")
     image_description: str
     image_type: str
     classified_type: str
     confidence: float = Field(ge=0.0, le=1.0)
+    reasoning: str
 
 def create_extraction_model(doc_type: str, fields: List[Dict]) -> Type[BaseModel]:
     """Dynamically creates a Pydantic model for detailed field extraction."""
     field_definitions = {
-        field['name']: (Optional[FieldDetail], Field(default=None, description=field['description']))
+        field['name']: (Optional[FieldDetail], Field(default=None))
         for field in fields
     }
     model_name = f"{doc_type.capitalize().replace(' ', '')}ExtractionModel"

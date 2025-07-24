@@ -9,7 +9,7 @@ from queue import Queue
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, status, Request
 from fastapi.responses import StreamingResponse
-from starlette.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 
 
 from utils import log, setup_logger
@@ -40,11 +40,9 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# --- Add CORS middleware to allow the frontend to connect ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Allows all origins
-    allow_credentials=True,
     allow_methods=["*"],  # Allows all methods
     allow_headers=["*"],  # Allows all headers
 )

@@ -15,7 +15,7 @@ class JobStatus(BaseModel):
 
 class FieldDetail(BaseModel):
     """Defines the schema for a single extracted field's details."""
-    value: Optional[Any] = None
+    value: Optional[str] = None
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
 
@@ -26,6 +26,10 @@ class ClassificationResponse(BaseModel):
     classified_type: str = Field(description="A strict internal type, e.g., 'CRL', 'INVOICE', 'UNKNOWN'.")
     confidence: float = Field(ge=0.0, le=1.0, description="Confidence score for the 'classified_type'.")
     reasoning: str = Field(description="Explanation for the 'classified_type' decision.")
+    image_description: str
+    image_type: str
+    classified_type: str
+    confidence: float = Field(ge=0.0, le=1.0)
 
 def create_extraction_model(doc_type: str, fields: List[Dict]) -> Type[BaseModel]:
     """Dynamically creates a Pydantic model for detailed field extraction."""

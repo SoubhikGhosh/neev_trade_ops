@@ -12,8 +12,6 @@ from processing import process_zip_file_async, api_client
 from config import TEMP_DIR
 from schemas import JobStatus
 
-# This in-memory store is for a single-process server.
-# For scaling, a shared store like Redis would be needed.
 job_statuses: dict[str, JobStatus] = {}
 
 @asynccontextmanager
@@ -28,7 +26,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Document Processing Service",
-    version="7.0.0-Optimized",
+    version="8.0.0-final",
     lifespan=lifespan
 )
 
@@ -74,9 +72,7 @@ async def create_upload_file(background_tasks: BackgroundTasks, file: UploadFile
 
     job_id = str(uuid.uuid4())
     job_statuses[job_id] = JobStatus(
-        job_id=job_id,
-        status="Queued",
-        details="Job has been queued for processing."
+        job_id=job_id, status="Queued", details="Job has been queued for processing."
     )
     
     background_tasks.add_task(run_processing_job, job_id, temp_zip_path)
@@ -97,7 +93,5 @@ async def root():
     return {
         "message": "Welcome to the Document Processing API",
         "version": app.version,
-        "docs_url": "/docs",
-        "process_endpoint": "/process-zip/",
-        "status_endpoint": "/status/{job_id}"
+        "docs_url": "/docs"
     }

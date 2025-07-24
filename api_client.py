@@ -63,6 +63,7 @@ class APIClient:
             
             log.info(f"[{context}] Calling model '{model_to_use}' with {len(document_files)} page(s) using Tool Calling.")
             start_time = time.perf_counter()
+            response = None # Initialize response to None
             
             try:
                 response = await self._client.chat.completions.create(
@@ -76,7 +77,6 @@ class APIClient:
                 tool_call = response.choices[0].message.tool_calls[0]
                 json_string = tool_call.function.arguments
 
-                # Parse the JSON string from the tool's arguments into the Pydantic schema
                 parsed_response = response_schema.model_validate_json(json_string)
                 
                 log.info(f"[{context}] LLM call and parsing successful. Duration: {duration:.2f} seconds.")
@@ -84,8 +84,11 @@ class APIClient:
 
             except (ValidationError, IndexError, KeyError) as e:
                 duration = time.perf_counter() - start_time
-                raw_response_content = response.choices[0].message.content if response.choices[0].message.content else "Tool call failed or was empty."
-                log.error(f"[{context}] Pydantic validation failed after {duration:.2f}s. The model did not return the correct tool call structure. Error: {e}")
+                raw_response_content = "Response was empty or did not contain a valid tool call."
+                if response and response.choices and response.choices[0].message:
+                    raw_response_content = response.choices[0].message.content or str(response.choices[0].message.tool_calls)
+
+                log.error(f"[{context}] Schema validation failed after {duration:.2f}s. Error: {e}")
                 return {"error": f"Schema Validation Error: {str(e)}", "raw_response": raw_response_content}
             except (APIStatusError, APIConnectionError) as e:
                 duration = time.perf_counter() - start_time

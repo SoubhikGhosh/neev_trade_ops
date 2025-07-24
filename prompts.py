@@ -51,6 +51,9 @@ Provide a value for the following fields based on a meticulous analysis:
 - **0.50 - 0.69 (Low):** Title is absent or ambiguous. Content is missing several
   key indicators.
 - **< 0.50 (Very Low):** Document does not resemble any of the acceptable types.
+
+---
+**System Command:** You MUST respond by calling the provided tool. Do not answer in plain text.
 """
 
 EXTRACTION_PROMPT_TEMPLATE = """
@@ -120,4 +123,7 @@ three keys in your response, following this pattern:
 ---
 **Fields to Extract:**
 {field_list_str}
+
+---
+**System Command:** You MUST respond by calling the provided tool. Do not answer in plain text.
 """

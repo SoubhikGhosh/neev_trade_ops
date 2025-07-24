@@ -1,5 +1,29 @@
 # prompts.py
 
+CORRECTION_PROMPT_TEMPLATE = """
+**Your Role:** You are a JSON Correction Specialist AI. Your task is to fix a flawed response from another AI.
+
+**Context:** An initial attempt was made to extract structured data from a '{doc_type}' document for Case ID '{case_id}'. That attempt failed to produce a valid, structured JSON output according to the required schema.
+
+**The flawed, unstructured output from the previous AI was:**
+{failed_output}
+
+
+**Your Task:**
+1.  **Analyze the flawed output.** It may contain partially correct data, explanations, or refusals.
+2.  **Re-examine the original document** (provided as context) and the **Original Extraction Requirements** listed below.
+3.  **Produce a valid JSON object** that strictly adheres to the required schema and accurately reflects the data in the document.
+4.  If the flawed output is helpful, use it to guide your extraction. If it is useless (e.g., an error message), ignore it and perform the extraction from scratch based on the original document and requirements.
+5.  **You MUST follow all rules from the original extraction prompt**, including the detailed instructions for creating `_Value`, `_Confidence`, and `_Reasoning` keys for every field.
+
+---
+**Original Extraction Requirements:**
+{field_list_str}
+
+---
+**System Command:** You MUST respond by calling the provided tool to generate the structured JSON. Do not respond in plain text.
+"""
+
 CLASSIFICATION_PROMPT_TEMPLATE = """
 **Task:** You are an AI Document Analysis Specialist. Your objective is to provide both a
 high-level summary and a detailed, accurate technical classification for the provided document

@@ -12,9 +12,9 @@ from typing import Dict, List, Any, Type
 from pydantic import BaseModel
 
 from config import (
-    DOCUMENT_FIELDS, TEMP_DIR, SUPPORTED_FILE_EXTENSIONS, EXCEL_COLUMN_ORDER
+    DOCUMENT_FIELDS, TEMP_DIR, SUPPORTED_FILE_EXTENSIONS, EXCEL_COLUMN_ORDER, JSON_CORRECTION_ATTEMPTS
 )
-from prompts import EXTRACTION_PROMPT_TEMPLATE, CLASSIFICATION_PROMPT_TEMPLATE
+from prompts import EXTRACTION_PROMPT_TEMPLATE, CLASSIFICATION_PROMPT_TEMPLATE, CORRECTION_PROMPT_TEMPLATE
 from utils import log, parse_filename_for_grouping
 from api_client import APIClient
 from schemas import ClassificationResponse, create_extraction_model, JobStatus
@@ -60,24 +60,61 @@ async def _extract_data_from_document(
     job_id: str, case_id: str, base_name: str, document_files: List[Dict], classified_doc_type: str,
     fields_to_extract: List[Dict], extraction_schema: Type[BaseModel]
 ) -> Dict[str, Any]:
+    """
+    Attempts to extract data, with a self-correction loop if the initial attempt fails.
+    """
     context = f"Job:{job_id}|Case:{case_id}|Group:'{base_name}'|Task:Extraction"
     sorted_docs = _prepare_document_files(document_files)
     
     field_list_str = "\n".join([f"- {f['name']}: {f['description']}" for f in fields_to_extract])
     
-    prompt = EXTRACTION_PROMPT_TEMPLATE.format(
+    # --- Initial Extraction Attempt ---
+    initial_prompt = EXTRACTION_PROMPT_TEMPLATE.format(
         doc_type=classified_doc_type, case_id=case_id, num_pages=len(sorted_docs), field_list_str=field_list_str
     )
     
     response_data = await api_client.call_llm_with_parsing(
-        prompt, sorted_docs, extraction_schema, context=context
+        initial_prompt, sorted_docs, extraction_schema, context=context
     )
     
+    # If successful on the first try, return the data
     if isinstance(response_data, BaseModel):
         return response_data.model_dump()
-    else:
-        log.error(f"[{context}] Extraction attempt failed: {response_data.get('error')}")
-        return {"_error": response_data.get("error", "Unknown extraction failure.")}
+
+    # --- Self-Correction Loop ---
+    log.warning(f"[{context}] Initial extraction failed. Starting self-correction attempts...")
+    
+    last_error_info = response_data
+    for i in range(JSON_CORRECTION_ATTEMPTS):
+        correction_context = f"{context}|CorrectionAttempt:{i+1}"
+        log.info(f"[{correction_context}] Running correction loop.")
+        
+        failed_output = last_error_info.get("raw_response", "No raw output from previous attempt.")
+        
+        correction_prompt = CORRECTION_PROMPT_TEMPLATE.format(
+            doc_type=classified_doc_type,
+            case_id=case_id,
+            failed_output=failed_output,
+            field_list_str=field_list_str
+        )
+        
+        # Call the LLM again with the correction prompt
+        corrected_response = await api_client.call_llm_with_parsing(
+            correction_prompt, sorted_docs, extraction_schema, context=correction_context
+        )
+        
+        # If correction is successful, return the data
+        if isinstance(corrected_response, BaseModel):
+            log.info(f"[{correction_context}] Self-correction successful.")
+            return corrected_response.model_dump()
+        
+        # Otherwise, update the error and loop again
+        last_error_info = corrected_response
+
+    # If all correction attempts fail
+    final_error_msg = f"Extraction failed after {JSON_CORRECTION_ATTEMPTS + 1} attempts. Final error: {last_error_info.get('error')}"
+    log.error(f"[{context}] {final_error_msg}")
+    return {"_error": final_error_msg}
 
 async def process_case_group(job_id: str, task_args: tuple):
     case_id, base_name, document_files, acceptable_types = task_args

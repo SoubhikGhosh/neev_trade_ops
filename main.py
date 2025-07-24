@@ -4,13 +4,22 @@ import os
 import shutil
 import tempfile
 import uuid
+import asyncio
+from queue import Queue
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, status
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, status, Request
+from fastapi.responses import StreamingResponse
+from starlette.middleware.cors import CORSMiddleware
+
 
 from utils import log, setup_logger
 from processing import process_zip_file_async, api_client
 from config import TEMP_DIR
 from schemas import JobStatus
+
+# --- Real-time Logging Setup ---
+# A thread-safe queue to hold log records
+log_queue = Queue()
 
 job_statuses: dict[str, JobStatus] = {}
 
@@ -18,7 +27,8 @@ job_statuses: dict[str, JobStatus] = {}
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown events."""
     os.makedirs(TEMP_DIR, exist_ok=True)
-    setup_logger()
+    # Pass the queue to the logger setup
+    setup_logger(log_queue)
     log.info("Application starting up...")
     yield
     log.info("Application shutting down: Closing API client...")
@@ -29,6 +39,33 @@ app = FastAPI(
     version="8.0.0-final",
     lifespan=lifespan
 )
+
+# --- Add CORS middleware to allow the frontend to connect ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
+
+async def log_streamer():
+    """Yields log records from the queue as they become available."""
+    while True:
+        try:
+            # Use asyncio.to_thread to run the blocking get() in a separate thread
+            record = await asyncio.to_thread(log_queue.get)
+            yield f"data: {record}\n\n"
+        except Exception:
+            # Handle potential queue errors or server shutdown
+            break
+
+@app.get("/stream-logs")
+async def stream_logs(request: Request):
+    """Streams log data using Server-Sent Events (SSE)."""
+    return StreamingResponse(log_streamer(), media_type="text/event-stream")
+
 
 def cleanup_file(file_path: str):
     """Background task to delete a temporary file."""

@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Log Analysis Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #111827; /* bg-gray-900 */
+        }
+        .kpi-card {
+            background-color: #1F2937; /* bg-gray-800 */
+            border: 1px solid #374151; /* border-gray-700 */
+        }
+        .chart-wrapper {
+             background-color: #1F2937; /* bg-gray-800 */
+             border: 1px solid #374151; /* border-gray-700 */
+        }
+        .log-feed-container {
+            background-color: #000;
+            border: 1px solid #374151; /* border-gray-700 */
+            height: 500px; /* Adjusted height */
+        }
+        .log-info { color: #818CF8; } /* text-indigo-400 */
+        .log-error { color: #F87171; } /* text-red-400 */
+        .log-warning { color: #FBBF24; } /* text-amber-400 */
+        
+        /* Custom scrollbar for a better dark mode experience */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1F2937; /* bg-gray-800 */
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #4B5563; /* bg-gray-600 */
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #6B7280; /* bg-gray-500 */
+        }
+    </style>
+</head>
+<body class="text-gray-200 p-4 sm:p-6 lg:p-8">
+
+    <div class="max-w-7xl mx-auto">
+        <header class="mb-8">
+            <h1 class="text-3xl font-bold text-white">Document Processing Dashboard</h1>
+            <p class="text-gray-400 mt-1">Live metrics from the document processing pipeline.</p>
+        </header>
+
+        <!-- FIX: Updated the error message to be more explicit and provide a direct solution -->
+        <div id="connection-error" class="hidden max-w-7xl mx-auto mb-4 p-4 rounded-lg bg-red-800 border border-red-600 text-red-200">
+            <h3 class="font-bold text-lg">Connection Error!</h3>
+            <p class="mt-2 text-sm">Could not connect to the backend log stream at `http://127.0.0.1:8000/stream-logs`. This is a Cross-Origin Resource Sharing (CORS) issue because the backend is not configured to accept requests from this page.</p>
+            <p class="mt-3 text-sm"><strong>To fix this:</strong> Please add the `CORSMiddleware` to your Python `main.py` file. A common mistake is to include `allow_credentials=True` with wildcard origins (`allow_origins=["*"]`), which browsers do not permit.</p>
+            <p class="mt-2 text-sm">The correct configuration for your backend should be:</p>
+            <pre class="mt-1 text-xs bg-gray-900 p-3 rounded-md w-full overflow-x-auto"><code>from fastapi.middleware.cors import CORSMiddleware
+
+# ... (your FastAPI app initialization, e.g., app = FastAPI(...))
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)</code></pre>
+            <p id="reconnect-message" class="mt-3 text-sm text-amber-300">Attempting to reconnect in 5 seconds...</p>
+        </div>
+
+        <!-- KPI Cards -->
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+            <div class="kpi-card p-4 rounded-lg">
+                <h3 class="text-sm font-medium text-gray-400">Total Groups</h3>
+                <p id="kpi-total-groups" class="text-3xl font-semibold text-white">0</p>
+            </div>
+            <div class="kpi-card p-4 rounded-lg">
+                <h3 class="text-sm font-medium text-gray-400">Success Rate</h3>
+                <p id="kpi-success-rate" class="text-3xl font-semibold text-green-400">N/A</p>
+            </div>
+            <div class="kpi-card p-4 rounded-lg">
+                <h3 class="text-sm font-medium text-gray-400">Avg. Class. Time (s)</h3>
+                <p id="kpi-avg-class-time" class="text-3xl font-semibold text-blue-400">0.00</p>
+            </div>
+            <div class="kpi-card p-4 rounded-lg">
+                <h3 class="text-sm font-medium text-gray-400">Avg. Extr. Time (s)</h3>
+                <p id="kpi-avg-extr-time" class="text-3xl font-semibold text-pink-400">0.00</p>
+            </div>
+            <div class="kpi-card p-4 rounded-lg">
+                <h3 class="text-sm font-medium text-gray-400">API Errors</h3>
+                <p id="kpi-api-errors" class="text-3xl font-semibold text-red-500">0</p>
+            </div>
+             <div class="kpi-card p-4 rounded-lg">
+                <h3 class="text-sm font-medium text-gray-400">Corrections</h3>
+                <p id="kpi-corrections" class="text-3xl font-semibold text-amber-400">0</p>
+            </div>
+        </div>
+
+        <!-- Main Content Area -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            
+            <!-- Charts Column -->
+            <div class="lg:col-span-2 flex flex-col gap-8">
+                <!-- Classification Chart -->
+                <div class="chart-wrapper p-4 rounded-lg">
+                    <h2 class="text-lg font-semibold mb-4">Classification Time (Last 10)</h2>
+                    <div class="relative h-52">
+                        <canvas id="classificationChart"></canvas>
+                    </div>
+                </div>
+                <!-- Extraction Chart -->
+                <div class="chart-wrapper p-4 rounded-lg">
+                    <h2 class="text-lg font-semibold mb-4">Extraction Time (Last 10)</h2>
+                    <div class="relative h-52">
+                        <canvas id="extractionChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live Log Feed Column -->
+            <div class="log-feed-container rounded-lg font-mono text-xs overflow-y-auto">
+                <h2 class="text-lg font-semibold sticky top-0 bg-black p-4 z-10">Live Log Feed</h2>
+                <div id="log-container" class="px-4 pb-4"></div>
+            </div>
+
+        </div>
+
+        <!-- Status Table -->
+        <div class="mt-8">
+            <h2 class="text-lg font-semibold mb-4">Processing Group Status (Last 10)</h2>
+            <div class="bg-gray-800 rounded-lg overflow-hidden border border-gray-700">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm text-left">
+                        <thead class="bg-gray-700 text-xs text-gray-300 uppercase">
+                            <tr>
+                                <th class="px-6 py-3">Case ID</th>
+                                <th class="px-6 py-3">Group</th>
+                                <th class="px-6 py-3">Task</th>
+                                <th class="px-6 py-3">Status</th>
+                                <th class="px-6 py-3">Duration (s)</th>
+                                <th class="px-6 py-3">Details</th>
+                            </tr>
+                        </thead>
+                        <tbody id="status-table-body">
+                           <tr class="border-b border-gray-700"><td colspan="6" class="text-center p-8 text-gray-500">Connecting to log stream...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- State Management ---
+            const state = {
+                totalGroups: 0,
+                successfulGroups: 0,
+                failedGroups: 0,
+                apiErrors: 0,
+                correctionAttempts: 0,
+                totalClassificationTime: 0,
+                successfulClassifications: 0,
+                totalExtractionTime: 0,
+                successfulExtractions: 0,
+            };
+
+            // --- DOM Elements ---
+            const kpi = {
+                totalGroups: document.getElementById('kpi-total-groups'),
+                successRate: document.getElementById('kpi-success-rate'),
+                avgClassTime: document.getElementById('kpi-avg-class-time'),
+                avgExtrTime: document.getElementById('kpi-avg-extr-time'),
+                apiErrors: document.getElementById('kpi-api-errors'),
+                corrections: document.getElementById('kpi-corrections'),
+            };
+            const logContainer = document.getElementById('log-container');
+            const tableBody = document.getElementById('status-table-body');
+            const classCtx = document.getElementById('classificationChart').getContext('2d');
+            const extrCtx = document.getElementById('extractionChart').getContext('2d');
+            const errorDiv = document.getElementById('connection-error');
+            
+            // --- Chart.js Setup ---
+            function createChart(context, label, borderColor, bgColor) {
+                return new Chart(context, {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [{
+                            label: label,
+                            data: [],
+                            borderColor: borderColor,
+                            backgroundColor: bgColor,
+                            tension: 0.2,
+                            pointBackgroundColor: borderColor,
+                            pointRadius: 3
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            y: { beginAtZero: true, ticks: { color: '#9CA3AF' }, grid: { color: '#374151' } },
+                            x: { ticks: { color: '#9CA3AF' }, grid: { color: '#374151' } }
+                        },
+                        plugins: { legend: { display: false } }
+                    }
+                });
+            }
+            const classificationChart = createChart(classCtx, 'Classification Time (s)', 'rgb(59, 130, 246)', 'rgba(59, 130, 246, 0.5)');
+            const extractionChart = createChart(extrCtx, 'Extraction Time (s)', 'rgb(236, 72, 153)', 'rgba(236, 72, 153, 0.5)');
+
+            // --- UI Update Functions ---
+            function updateKpis() {
+                kpi.totalGroups.textContent = state.totalGroups;
+                const totalSuccessful = state.successfulClassifications + state.successfulExtractions;
+                const totalTasks = totalSuccessful + state.failedGroups;
+                if (totalTasks > 0) {
+                    const rate = (totalSuccessful / totalTasks) * 100;
+                    kpi.successRate.textContent = `${rate.toFixed(1)}%`;
+                }
+                kpi.avgClassTime.textContent = state.successfulClassifications > 0 ? (state.totalClassificationTime / state.successfulClassifications).toFixed(2) : '0.00';
+                kpi.avgExtrTime.textContent = state.successfulExtractions > 0 ? (state.totalExtractionTime / state.successfulExtractions).toFixed(2) : '0.00';
+                kpi.apiErrors.textContent = state.apiErrors;
+                kpi.corrections.textContent = state.correctionAttempts;
+            }
+
+            function addChartData(chart, label, duration) {
+                chart.data.labels.push(label);
+                chart.data.datasets[0].data.push(duration);
+                const maxDataPoints = 10;
+                if (chart.data.labels.length > maxDataPoints) {
+                    chart.data.labels.shift();
+                    chart.data.datasets[0].data.shift();
+                }
+                chart.update();
+            }
+
+            function addTableRow(data) {
+                if(tableBody.rows.length === 1 && tableBody.rows[0].cells[0].textContent === "Connecting to log stream..."){
+                    tableBody.innerHTML = '';
+                }
+                const row = tableBody.insertRow(0);
+                row.className = 'bg-gray-800 border-b border-gray-700 hover:bg-gray-600';
+                const statusColors = {
+                    'Successful': 'bg-green-900 text-green-300',
+                    'Failed': 'bg-red-900 text-red-300',
+                    'Corrected': 'bg-yellow-900 text-yellow-300',
+                };
+                const statusColor = statusColors[data.status] || 'bg-gray-600 text-gray-200';
+                row.innerHTML = `
+                    <td class="px-6 py-4 font-medium text-gray-300">${data.caseId}</td>
+                    <td class="px-6 py-4">${data.group}</td>
+                    <td class="px-6 py-4">${data.task}</td>
+                    <td class="px-6 py-4"><span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${statusColor}">${data.status}</span></td>
+                    <td class="px-6 py-4">${data.duration}</td>
+                    <td class="px-6 py-4 text-gray-400">${data.details}</td>
+                `;
+                if (tableBody.rows.length > 10) {
+                    tableBody.deleteRow(10);
+                }
+            }
+
+            function addLogEntry(logString, levelClass = 'log-info') {
+                const logEntry = document.createElement('div');
+                logEntry.className = levelClass;
+                logEntry.textContent = logString;
+                logContainer.appendChild(logEntry);
+                logContainer.parentElement.scrollTop = logContainer.parentElement.scrollHeight;
+            }
+
+            function parseLog(logString) {
+                addLogEntry(logString);
+                const successRegex = /\[Job:(?<jobId>[^|]+)\|Case:(?<caseId>[^|]+)\|Group:'(?<group>[^']+)'.*?Task:(?<task>[^\]]+)\].*?successful. Duration: (?<duration>[\d.]+) seconds/;
+                const errorRegex = /\[Job:(?<jobId>[^|]+)\|Case:(?<caseId>[^|]+)\|Group:'(?<group>[^']+)'.*?Task:(?<task>[^\]]+)\].*?error after (?<duration>[\d.]+)s: (?<details>.*)/;
+                const totalGroupsRegex = /Found (\d+) document groups to process/;
+                const correctionRegex = /Running correction loop/;
+                let match;
+                
+                if (match = logString.match(successRegex)) {
+                    const { caseId, group, task, duration } = match.groups;
+                    const taskType = task.split('|')[0];
+                    const isCorrected = logString.includes('CorrectionAttempt');
+                    const status = isCorrected ? 'Corrected' : 'Successful';
+                    const durationFloat = parseFloat(duration);
+                    if (taskType === 'Classification') {
+                        state.successfulClassifications++;
+                        state.totalClassificationTime += durationFloat;
+                        addChartData(classificationChart, group, durationFloat);
+                    } else if (taskType === 'Extraction') {
+                        state.successfulExtractions++;
+                        state.totalExtractionTime += durationFloat;
+                        addChartData(extractionChart, group, durationFloat);
+                    }
+                    addTableRow({ caseId, group, task: taskType, status, duration, details: isCorrected ? 'Recovered via self-correction' : 'Processed successfully' });
+                } else if (match = logString.match(errorRegex)) {
+                    const { caseId, group, task, duration, details } = match.groups;
+                    state.failedGroups++;
+                    state.apiErrors++;
+                    addTableRow({ caseId, group, task: task.split('|')[0], status: 'Failed', duration, details });
+                } else if (match = logString.match(totalGroupsRegex)) {
+                    state.totalGroups = parseInt(match[1], 10);
+                } else if (match = logString.match(correctionRegex)) {
+                    state.correctionAttempts++;
+                }
+                updateKpis();
+            }
+
+            // --- Live Connection Setup ---
+            function connect() {
+                // Replace with your actual backend URL if it's different
+                const eventSource = new EventSource("http://127.0.0.1:8000/stream-logs");
+
+                eventSource.onmessage = function(event) {
+                    parseLog(event.data);
+                };
+
+                eventSource.onerror = function(err) {
+                    console.error("EventSource failed:", err);
+                    errorDiv.classList.remove('hidden'); // Show the detailed error message
+                    eventSource.close();
+                    // Try to reconnect every 5 seconds
+                    setTimeout(connect, 5000); 
+                };
+
+                eventSource.onopen = function() {
+                    // Hide error message on successful connection
+                    errorDiv.classList.add('hidden');
+                    addLogEntry("--- Connected to live log stream ---", "log-warning");
+                     if(tableBody.rows.length === 1 && tableBody.rows[0].cells[0].textContent === "Connecting to log stream..."){
+                        tableBody.innerHTML = '<tr class="border-b border-gray-700"><td colspan="6" class="text-center p-8 text-gray-500">Waiting for data...</td></tr>';
+                    }
+                };
+            }
+            
+            connect();
+        });
+    </script>
+
+</body>
+</html>

@@ -5,26 +5,47 @@ import sys
 import re
 import mimetypes
 from pathlib import Path
+from queue import Queue
+from logging.handlers import QueueHandler # Import QueueHandler
 from config import LOG_FILE, LOG_LEVEL, SUPPORTED_MIME_TYPES
 
-def setup_logger():
-    """Configures and returns a singleton logger."""
+# The formatter needs to be defined at the module level
+# so the QueueHandler can format the record before putting it in the queue.
+log_formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - [%(funcName)s] - %(message)s'
+)
+
+class FormattedQueueHandler(QueueHandler):
+    """A QueueHandler that formats the record before putting it on the queue."""
+    def emit(self, record):
+        # Format the record and then enqueue it
+        self.enqueue(self.format(record))
+
+def setup_logger(log_queue: Queue):
+    """Configures the root logger to send records to a queue."""
     logger = logging.getLogger("DocProcessor")
     if not logger.handlers:
         logger.setLevel(LOG_LEVEL)
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - [%(funcName)s] - %(message)s'
-        )
+        
+        # Add a handler that puts formatted log strings onto the queue
+        queue_handler = FormattedQueueHandler(log_queue)
+        queue_handler.setFormatter(log_formatter)
+        logger.addHandler(queue_handler)
+
+        # Optional: Keep file handler for persistent logs
         file_handler = logging.FileHandler(LOG_FILE, mode='a')
-        file_handler.setFormatter(formatter)
+        file_handler.setFormatter(log_formatter)
         logger.addHandler(file_handler)
         
+        # Optional: Keep stdout handler for console output
         stdout_handler = logging.StreamHandler(sys.stdout)
-        stdout_handler.setFormatter(formatter)
+        stdout_handler.setFormatter(log_formatter)
         logger.addHandler(stdout_handler)
     return logger
 
-log = setup_logger()
+# This global 'log' object will be configured by the lifespan manager in main.py
+log = logging.getLogger("DocProcessor")
+
 
 def get_mime_type(file_path):
     """Determines the MIME type of a file."""

@@ -1,3 +1,5 @@
+# prompts.py
+
 CLASSIFICATION_PROMPT_TEMPLATE = """
 **Task:** You are an AI Document Classification Specialist. Your objective is to meticulously analyze the provided document pages ({num_pages} pages) and accurately classify the document's primary type based on its intrinsic purpose, structural characteristics, and specific content elements. The document may consist of multiple pages that collectively form a single logical entity.
 
@@ -34,22 +36,6 @@ Strictly classify the document ONLY amongst the acceptable document types.
     * **Medium Confidence (0.70-0.89):** The title might be generic (e.g., just "INVOICE" where it could be Commercial or Proforma) or the type is inferred (e.g., a Purchase Order acting as a Proforma Invoice based on its content). Core fields and structure strongly suggest a particular type, but some ambiguity or deviation exists. Or, a clear title but some expected key elements are missing or unclear.
     * **Low Confidence (0.50-0.69):** Title is ambiguous, misleading, or absent. Content could align with multiple types, or is missing several key indicators for any single type, making classification difficult.
     * **Very Low/Unknown (0.0-0.49):** Document does not appear to match any of the acceptable types based on available indicators, or is too fragmented/illegible for reliable classification.
-5.  **Output Format (Strict Adherence Required):**
-    * Return ONLY a single, valid JSON object.
-    * The JSON object must contain exactly three keys: `"classified_type"`, `"confidence"`, and `"reasoning"`.
-    * `"classified_type"`: The determined document type string. This MUST be one of the "Acceptable Document Types". If, after thorough analysis, the document does not definitively match any acceptable type based on the provided indicators, use "UNKNOWN".
-    * `"confidence"`: A numerical score between 0.0 and 1.0 (e.g., 0.95).
-    * `"reasoning"`: A concise but specific explanation for your classification. Reference explicit titles, key terms found (or absent), presence/absence of core fields, or structural elements that led to your decision (e.g., "Document explicitly titled 'PROFORMA INVOICE' on page 1. Contains seller/buyer, itemized goods with prices, total value, and payment terms. Serves as a preliminary bill for payment initiation."). If 'UNKNOWN', explain why (e.g., "Lacks clear title and key invoice fields like invoice number or distinct buyer/seller sections. Appears to be an internal statement not matching defined types.").
-
-**Example Output:**
-```json
-{{
-  "classified_type": "INVOICE",
-  "confidence": 0.98,
-  "reasoning": "Document exhibits all core characteristics of a proforma invoice: details seller and buyer, lists specific goods with quantities and unit prices leading to a total amount, specifies payment terms ('50% advance...'), and indicates 'Ship Date TBD'. While not explicitly titled 'Proforma Invoice', its structure and content align perfectly with its function as a preliminary bill for initiating payment, akin to a sales order formatted for external use."
-}}
-
-Important: Your response must be ONLY the valid JSON object. No greetings, apologies, or any text outside the JSON structure.
 """
 
 EXTRACTION_PROMPT_TEMPLATE = """
@@ -119,39 +105,4 @@ For each field, you must use the detailed `description` to understand its specif
             * Contextual Conflict: "Value for 'Net Weight' is '1500 KG', but 'Gross Weight' is '1400 KG'; Confidence 0.60 for Net Weight due to inconsistency requiring review."
         * If confidence is 0.99-1.00, reasoning can be succinct, e.g., "All characters perfectly clear, machine-printed, explicit standard label, contextually validated."
         * If `"value"` is `null`, briefly explain *why* (e.g., "No field labeled 'HS Code' or any recognizable tariff code found on any page.", "The section for 'Intermediary Bank Details' was present but explicitly marked 'Not Applicable'.").
-
-**Example of Expected JSON Output Structure (Reflecting Stricter Confidence & Generic Reasoning):**
-(Note: Actual field names will match those provided in the 'Fields to Extract' list for the specific '{doc_type}')
-
-```json
-{{
-  "INVOICE_NO": {{
-    "value": "INV-XYZ-789",
-    "confidence": 0.99,
-    "reasoning": "Extracted from explicit label 'Invoice #:' on page 1, header. All characters are machine-printed, clear, and unambiguous. Format matches typical invoice numbering."
-  }},
-  "BUYER_NAME": {{
-    "value": "Generic Trading Co.",
-    "confidence": 1.00,
-    "reasoning": "Extracted from 'BILL TO:' section, page 1. All characters perfectly clear, machine-printed, standard label, contextually validated."
-  }},
-  "HS_CODE": {{
-    "value": null,
-    "confidence": 0.0,
-    "reasoning": "No field labeled 'HS Code', 'HTS Code', or 'Tariff Code', nor any recognizable HS code pattern, found on any page of the document."
-  }},
-  "PAYMENT_TERMS": {{
-    "value": "Net 30 days from date of invoice",
-    "confidence": 0.98,
-    "reasoning": "Extracted from section labeled 'Payment Terms:' on page 2. Text is clearly printed and directly associated with a standard label. All characters legible."
-  }},
-  "DATE_AND_TIME_OF_RECEIPT_OF_DOCUMENT": {{
-    "value": "2024-07-16 11:25",
-    "confidence": 0.90,
-    "reasoning": "Date '16 JUL 2024' clearly visible in a bank's 'RECEIVED' stamp on page 1. Time '11:25' also part of the stamp, clearly printed. Converted date to ISO format. Confidence slightly below max due to typical minor imperfections in stamp quality."
-  }}
-  // ... (all other requested fields for the '{doc_type}' document would follow this structure)
-}}
-
-Important: Your response must be ONLY the valid JSON object. No greetings, apologies, or any text outside the JSON structure.
 """

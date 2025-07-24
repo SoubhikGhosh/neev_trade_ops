@@ -1,15 +1,17 @@
+# schemas.py
+
 from pydantic import BaseModel, Field, create_model
 from typing import Optional, Any, List, Dict, Type
 
 class JobStatus(BaseModel):
     """Defines the schema for a job's status response."""
     job_id: str
-    status: str = Field(description="The current status of the job (e.g., Queued, Processing, Completed, Failed).")
-    details: str = Field(description="A message describing the current progress.")
-    total_groups: int = Field(0, description="Total number of document groups to process.")
-    groups_processed: int = Field(0, description="Number of document groups already processed.")
-    progress_percent: float = Field(0.0, ge=0.0, le=100.0, description="The completion percentage of the job.")
-    result_path: Optional[str] = Field(None, description="The path to the final output file upon completion.")
+    status: str
+    details: str
+    total_groups: int = 0
+    groups_processed: int = 0
+    progress_percent: float = 0.0
+    result_path: Optional[str] = None
 
 class FieldDetail(BaseModel):
     """Defines the schema for a single extracted field's details."""
@@ -18,19 +20,18 @@ class FieldDetail(BaseModel):
     reasoning: str
 
 class ClassificationResponse(BaseModel):
-    """Defines the schema for the classification output from the LLM."""
-    classified_type: str
-    confidence: float = Field(ge=0.0, le=1.0)
-    reasoning: str
+    """Defines the schema for the combined classification output from the LLM."""
+    image_description: str = Field(description="A one-sentence summary of the document's purpose.")
+    image_type: str = Field(description="A general classification, e.g., 'Request Letter', 'Invoice'.")
+    classified_type: str = Field(description="A strict internal type, e.g., 'CRL', 'INVOICE', 'UNKNOWN'.")
+    confidence: float = Field(ge=0.0, le=1.0, description="Confidence score for the 'classified_type'.")
+    reasoning: str = Field(description="Explanation for the 'classified_type' decision.")
 
 def create_extraction_model(doc_type: str, fields: List[Dict]) -> Type[BaseModel]:
-    """
-    Dynamically creates a Pydantic model where all fields are OPTIONAL.
-    This prevents validation errors if the LLM omits a field.
-    """
+    """Dynamically creates a Pydantic model for detailed field extraction."""
     field_definitions = {
-        # Each field is now Optional and defaults to None if not provided by the LLM.
-        field['name']: (Optional[FieldDetail], Field(default=None)) for field in fields
+        field['name']: (Optional[FieldDetail], Field(default=None, description=field['description']))
+        for field in fields
     }
-    model_name = f"{doc_type.capitalize()}ExtractionModel"
+    model_name = f"{doc_type.capitalize().replace(' ', '')}ExtractionModel"
     return create_model(model_name, **field_definitions)

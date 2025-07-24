@@ -6,32 +6,29 @@ import tempfile
 import uuid
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, status
-from fastapi.responses import JSONResponse
 
 from utils import log, setup_logger
-from processing import process_zip_file_async
+from processing import process_zip_file_async, api_client
 from config import TEMP_DIR
 from schemas import JobStatus
 
-# This in-memory store is suitable for a single-process server.
-# For scaling to multiple workers, a shared store like Redis would be required.
+# This in-memory store is for a single-process server.
+# For scaling, a shared store like Redis would be needed.
 job_statuses: dict[str, JobStatus] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown events."""
-    from processing import api_client
     os.makedirs(TEMP_DIR, exist_ok=True)
     setup_logger()
-    log.info("Application startup: Initializing API client...")
-    await api_client._get_client()
+    log.info("Application starting up...")
     yield
-    log.info("Application shutdown: Closing API client...")
+    log.info("Application shutting down: Closing API client...")
     await api_client.close()
 
 app = FastAPI(
     title="Document Processing Service",
-    version="5.0.0-Progress",
+    version="7.0.0-Optimized",
     lifespan=lifespan
 )
 
@@ -45,7 +42,7 @@ def cleanup_file(file_path: str):
         log.error(f"Error cleaning up file {file_path}: {e}")
 
 async def run_processing_job(job_id: str, temp_zip_path: str):
-    """A wrapper function to run the processing logic and update job status."""
+    """A wrapper to run the processing logic and update job status."""
     try:
         output_csv_path = await process_zip_file_async(job_id, temp_zip_path, job_statuses)
         job_statuses[job_id].status = "Completed"
@@ -54,9 +51,9 @@ async def run_processing_job(job_id: str, temp_zip_path: str):
         job_statuses[job_id].result_path = output_csv_path
         log.info(f"Job {job_id} completed. Output at {output_csv_path}")
     except Exception as e:
-        log.exception(f"Job {job_id} failed with an error.")
+        log.exception(f"Job {job_id} failed with a critical error.")
         job_statuses[job_id].status = "Failed"
-        job_statuses[job_id].details = f"An error occurred: {str(e)}"
+        job_statuses[job_id].details = f"A critical error occurred: {str(e)}"
     finally:
         cleanup_file(temp_zip_path)
 
@@ -99,7 +96,8 @@ async def get_job_status(job_id: str):
 async def root():
     return {
         "message": "Welcome to the Document Processing API",
-        "version": "5.0.0-Progress",
+        "version": app.version,
+        "docs_url": "/docs",
         "process_endpoint": "/process-zip/",
         "status_endpoint": "/status/{job_id}"
     }

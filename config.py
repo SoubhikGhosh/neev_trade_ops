@@ -23,7 +23,6 @@ SUPPORTED_MIME_TYPES = {
 
 SUPPORTED_FILE_EXTENSIONS = [".pdf", ".png", ".jpg", ".jpeg"]
 
-MAX_WORKERS = 100
 TEMP_DIR = "temp_processing"
 OUTPUT_FILENAME = "extracted_data.csv"
 JSON_CORRECTION_ATTEMPTS = 3

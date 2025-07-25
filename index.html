@@ -58,7 +58,7 @@
         <div id="connection-error" class="hidden max-w-7xl mx-auto mb-4 p-4 rounded-lg bg-red-800 border border-red-600 text-red-200">
             <h3 class="font-bold text-lg">Connection Error!</h3>
             <p class="mt-2 text-sm">Could not connect to the backend log stream at `http://127.0.0.1:8080/stream-logs`. Ensure your FastAPI backend is running.</p>
-            <p id="reconnect-message" class="mt-3 text-sm text-amber-300">Attempting to reconnect in 5 seconds...</p>
+            <p id="reconnect-message" class="mt-3 text-sm text-amber-300"></p>
         </div>
 
         <div class="mb-8">
@@ -175,6 +175,7 @@
             const classCtx = document.getElementById('classificationChart').getContext('2d');
             const extrCtx = document.getElementById('extractionChart').getContext('2d');
             const errorDiv = document.getElementById('connection-error');
+            const reconnectMessage = document.getElementById('reconnect-message');
             const jobIdInput = document.getElementById('job-id-input');
             const getStatusBtn = document.getElementById('get-status-btn');
             const jobStatusDisplay = document.getElementById('job-status-display');
@@ -183,27 +184,8 @@
             function createChart(context, label, borderColor, bgColor) {
                 return new Chart(context, {
                     type: 'line',
-                    data: {
-                        labels: [],
-                        datasets: [{
-                            label: label,
-                            data: [],
-                            borderColor: borderColor,
-                            backgroundColor: bgColor,
-                            tension: 0.2,
-                            pointBackgroundColor: borderColor,
-                            pointRadius: 3
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        scales: {
-                            y: { beginAtZero: true, ticks: { color: '#9CA3AF' }, grid: { color: '#374151' } },
-                            x: { ticks: { color: '#9CA3AF' }, grid: { color: '#374151' } }
-                        },
-                        plugins: { legend: { display: false } }
-                    }
+                    data: { labels: [], datasets: [{ label: label, data: [], borderColor: borderColor, backgroundColor: bgColor, tension: 0.2, pointBackgroundColor: borderColor, pointRadius: 3 }] },
+                    options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, ticks: { color: '#9CA3AF' }, grid: { color: '#374151' } }, x: { ticks: { color: '#9CA3AF' }, grid: { color: '#374151' } } }, plugins: { legend: { display: false } } }
                 });
             }
             const classificationChart = createChart(classCtx, 'Classification Time (s)', 'rgb(59, 130, 246)', 'rgba(59, 130, 246, 0.5)');
@@ -218,24 +200,18 @@
                     jobStatusDisplay.classList.remove('hidden');
                     return;
                 }
-
                 if (statusInterval) clearInterval(statusInterval);
-
                 const updateStatus = async () => {
                     jobStatusDisplay.classList.remove('hidden');
                     try {
                         const response = await fetch(`http://127.0.0.1:8080/status/${jobId}`);
                         const data = await response.json();
-
                         if (!response.ok) {
                             jobStatusDisplay.innerHTML = `<p class="text-red-400">Error: ${data.detail || 'Job not found'}</p>`;
-                            clearInterval(statusInterval);
-                            return;
+                            clearInterval(statusInterval); return;
                         }
-                        
                         const progressPercentage = data.progress_percent.toFixed(2);
                         const resultLink = data.result_path ? `<a href="${data.result_path}" class="text-indigo-400 hover:underline" download>Download Result</a>` : 'Not yet available';
-                        
                         jobStatusDisplay.innerHTML = `
                             <div class="grid grid-cols-2 gap-x-4 gap-y-2">
                                 <p><strong>Job ID:</strong></p><p class="font-mono">${data.job_id}</p>
@@ -249,9 +225,7 @@
                                     <p class="text-right text-xs">${progressPercentage}% (${data.groups_processed}/${data.total_groups})</p>
                                 </div>
                                 <p><strong>Result:</strong></p><p>${resultLink}</p>
-                            </div>
-                        `;
-
+                            </div>`;
                         if (data.status === 'Completed' || data.status === 'Failed') {
                             clearInterval(statusInterval);
                         }
@@ -261,9 +235,8 @@
                         clearInterval(statusInterval);
                     }
                 };
-                
-                updateStatus(); // Initial call
-                statusInterval = setInterval(updateStatus, 5000); // Poll every 5 seconds
+                updateStatus();
+                statusInterval = setInterval(updateStatus, 5000);
             }
             getStatusBtn.addEventListener('click', fetchJobStatus);
 
@@ -272,10 +245,7 @@
                 kpi.totalGroups.textContent = state.totalGroups;
                 const totalSuccessful = state.successfulClassifications + state.successfulExtractions;
                 const totalTasks = totalSuccessful + state.failedGroups;
-                if (totalTasks > 0) {
-                    const rate = (totalSuccessful / totalTasks) * 100;
-                    kpi.successRate.textContent = `${rate.toFixed(1)}%`;
-                }
+                kpi.successRate.textContent = totalTasks > 0 ? `${((totalSuccessful / totalTasks) * 100).toFixed(1)}%` : 'N/A';
                 kpi.avgClassTime.textContent = state.successfulClassifications > 0 ? (state.totalClassificationTime / state.successfulClassifications).toFixed(2) : '0.00';
                 kpi.avgExtrTime.textContent = state.successfulExtractions > 0 ? (state.totalExtractionTime / state.successfulExtractions).toFixed(2) : '0.00';
                 kpi.apiErrors.textContent = state.apiErrors;
@@ -285,8 +255,7 @@
             function addChartData(chart, label, duration) {
                 chart.data.labels.push(label);
                 chart.data.datasets[0].data.push(duration);
-                const maxDataPoints = 10;
-                if (chart.data.labels.length > maxDataPoints) {
+                if (chart.data.labels.length > 10) {
                     chart.data.labels.shift();
                     chart.data.datasets[0].data.shift();
                 }
@@ -294,28 +263,15 @@
             }
 
             function addTableRow(data) {
-                if(tableBody.rows.length === 1 && tableBody.rows[0].cells[0].textContent === "Connecting to log stream..."){
+                if (tableBody.rows.length === 1 && tableBody.rows[0].cells[0].textContent === "Connecting to log stream...") {
                     tableBody.innerHTML = '';
                 }
                 const row = tableBody.insertRow(0);
                 row.className = 'bg-gray-800 border-b border-gray-700 hover:bg-gray-600';
-                const statusColors = {
-                    'Success': 'bg-green-900 text-green-300',
-                    'Failed': 'bg-red-900 text-red-300',
-                    'Corrected': 'bg-yellow-900 text-yellow-300',
-                };
+                const statusColors = { 'Success': 'bg-green-900 text-green-300', 'Failed': 'bg-red-900 text-red-300', 'Corrected': 'bg-yellow-900 text-yellow-300' };
                 const statusColor = statusColors[data.status] || 'bg-gray-600 text-gray-200';
-                row.innerHTML = `
-                    <td class="px-6 py-4 font-medium text-gray-300">${data.caseId}</td>
-                    <td class="px-6 py-4">${data.group}</td>
-                    <td class="px-6 py-4">${data.task}</td>
-                    <td class="px-6 py-4"><span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${statusColor}">${data.status}</span></td>
-                    <td class="px-6 py-4">${data.duration}</td>
-                    <td class="px-6 py-4 text-gray-400">${data.details}</td>
-                `;
-                if (tableBody.rows.length > 10) {
-                    tableBody.deleteRow(10);
-                }
+                row.innerHTML = `<td class="px-6 py-4 font-medium text-gray-300">${data.caseId}</td><td class="px-6 py-4">${data.group}</td><td class="px-6 py-4">${data.task}</td><td class="px-6 py-4"><span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${statusColor}">${data.status}</span></td><td class="px-6 py-4">${data.duration}</td><td class="px-6 py-4 text-gray-400">${data.details}</td>`;
+                if (tableBody.rows.length > 10) { tableBody.deleteRow(10); }
             }
 
             function addLogEntry(logString, levelClass = 'log-info') {
@@ -328,16 +284,16 @@
 
             function parseLog(logString) {
                 addLogEntry(logString);
-                
                 const jobIdRegex = /Job ([a-f0-9\-]{36}) started/;
                 let jobIdMatch = logString.match(jobIdRegex);
                 if (jobIdMatch && !jobIdInput.value) {
                     jobIdInput.value = jobIdMatch[1];
-                    fetchJobStatus(); // Automatically start polling status for the new job
+                    fetchJobStatus();
                 }
-
+                
                 const successRegex = /\[Job:(?<jobId>[^|]+)\|Case:(?<caseId>[^|]+)\|Group:'(?<group>[^']+)'.*?Task:(?<task>[^\]]+)\].*?successful. Duration: (?<duration>[\d.]+) seconds/;
-                const errorRegex = /\[Job:(?<jobId>[^|]+)\|Case:(?<caseId>[^|]+)\|Group:'(?<group>[^']+)'.*?Task:(?<task>[^\]]+)\].*?error after (?<duration>[\d.]+)s: (?<details>.*)/;
+                // MODIFICATION: Updated regex to capture both "error after" and "failed after" messages
+                const errorRegex = /\[Job:(?<jobId>[^|]+)\|Case:(?<caseId>[^|]+)\|Group:'(?<group>[^']+)'.*?Task:(?<task>[^\]]+)\].*?(?:error after|failed after all retries).*?Duration: (?<duration>[\d.]+)s: (?<details>.*)/;
                 const totalGroupsRegex = /Found (\d+) document groups to process/;
                 const correctionRegex = /Running correction loop/;
                 let match;
@@ -348,21 +304,14 @@
                     const isCorrected = logString.includes('CorrectionAttempt');
                     const status = isCorrected ? 'Corrected' : 'Success';
                     const durationFloat = parseFloat(duration);
-                    if (taskType === 'Classification') {
-                        state.successfulClassifications++;
-                        state.totalClassificationTime += durationFloat;
-                        addChartData(classificationChart, group, durationFloat);
-                    } else if (taskType === 'Extraction') {
-                        state.successfulExtractions++;
-                        state.totalExtractionTime += durationFloat;
-                        addChartData(extractionChart, group, durationFloat);
-                    }
+                    if (taskType === 'Classification') { state.successfulClassifications++; state.totalClassificationTime += durationFloat; addChartData(classificationChart, group, durationFloat); } 
+                    else if (taskType === 'Extraction') { state.successfulExtractions++; state.totalExtractionTime += durationFloat; addChartData(extractionChart, group, durationFloat); }
                     addTableRow({ caseId, group, task: taskType, status, duration, details: isCorrected ? 'Recovered via self-correction' : 'Processed successfully' });
                 } else if (match = logString.match(errorRegex)) {
                     const { caseId, group, task, duration, details } = match.groups;
                     state.failedGroups++;
                     state.apiErrors++;
-                    addTableRow({ caseId, group, task: task.split('|')[0], status: 'Failed', duration, details });
+                    addTableRow({ caseId, group, task: task.split('|')[0], status: 'Failed', duration, details: details.trim() });
                 } else if (match = logString.match(totalGroupsRegex)) {
                     state.totalGroups = parseInt(match[1], 10);
                 } else if (match = logString.match(correctionRegex)) {
@@ -374,27 +323,23 @@
             // --- Live Connection Setup ---
             function connect() {
                 const eventSource = new EventSource("http://127.0.0.1:8080/stream-logs");
-
-                eventSource.onmessage = function(event) {
-                    parseLog(event.data);
-                };
-
-                eventSource.onerror = function(err) {
+                eventSource.onmessage = (event) => parseLog(event.data);
+                eventSource.onerror = (err) => {
                     console.error("EventSource failed:", err);
                     errorDiv.classList.remove('hidden');
+                    // MODIFICATION: Persist UI state by only showing a message.
+                    reconnectMessage.textContent = 'Connection lost. Displayed data is the last known state. Attempting to reconnect in 5 seconds...';
                     eventSource.close();
                     setTimeout(connect, 5000); 
                 };
-
-                eventSource.onopen = function() {
+                eventSource.onopen = () => {
                     errorDiv.classList.add('hidden');
                     addLogEntry("--- Connected to live log stream ---", "log-warning");
-                     if(tableBody.rows.length === 1 && tableBody.rows[0].cells[0].textContent === "Connecting to log stream..."){
+                    if (tableBody.rows.length === 1 && tableBody.rows[0].cells[0].textContent === "Connecting to log stream...") {
                         tableBody.innerHTML = '<tr class="border-b border-gray-700"><td colspan="6" class="text-center p-8 text-gray-500">Waiting for data...</td></tr>';
                     }
                 };
             }
-            
             connect();
         });
     </script>

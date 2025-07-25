@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import uuid
 import asyncio
+import logging
 from queue import Queue
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, status, Request
@@ -22,6 +23,16 @@ from schemas import JobStatus
 log_queue = Queue()
 
 job_statuses: dict[str, JobStatus] = {}
+
+# MODIFICATION: Add a log filter to exclude status check endpoints from the access logs
+class EndpointFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Exclude logs from uvicorn.access for paths that start with /status
+        return record.getMessage().find("/status/") == -1
+
+# Filter out /status/ GET requests
+logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

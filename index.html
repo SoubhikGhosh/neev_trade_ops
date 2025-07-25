@@ -57,7 +57,7 @@
 
         <div id="connection-error" class="hidden max-w-7xl mx-auto mb-4 p-4 rounded-lg bg-red-800 border border-red-600 text-red-200">
             <h3 class="font-bold text-lg">Connection Error!</h3>
-            <p class="mt-2 text-sm">Could not connect to the backend log stream at `http://127.0.0.1:8000/stream-logs`. Ensure your FastAPI backend is running.</p>
+            <p class="mt-2 text-sm">Could not connect to the backend log stream at `http://127.0.0.1:8080/stream-logs`. Ensure your FastAPI backend is running.</p>
             <p id="reconnect-message" class="mt-3 text-sm text-amber-300">Attempting to reconnect in 5 seconds...</p>
         </div>
 
@@ -224,7 +224,7 @@
                 const updateStatus = async () => {
                     jobStatusDisplay.classList.remove('hidden');
                     try {
-                        const response = await fetch(`http://127.0.0.1:8000/status/${jobId}`);
+                        const response = await fetch(`http://127.0.0.1:8080/status/${jobId}`);
                         const data = await response.json();
 
                         if (!response.ok) {

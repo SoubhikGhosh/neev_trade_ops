@@ -20,6 +20,8 @@ from api_client import APIClient
 from schemas import ClassificationResponse, create_extraction_model, JobStatus
 
 api_client = APIClient()
+# MODIFICATION: Define a semaphore for controlled concurrency. Adjust the value as needed.
+PROCESSING_SEMAPHORE = asyncio.Semaphore(10)
 
 def _append_to_csv(results_list: List[Dict], output_path: Path, column_order: List[str]):
     if not results_list: return
@@ -117,46 +119,47 @@ async def _extract_data_from_document(
     return {"_error": final_error_msg}
 
 async def process_case_group(job_id: str, task_args: tuple):
-    case_id, base_name, document_files, acceptable_types = task_args
+    async with PROCESSING_SEMAPHORE: # Wait for a free slot to run
+        case_id, base_name, document_files, acceptable_types = task_args
 
-    class_result = await _classify_document_type(job_id, case_id, base_name, document_files, acceptable_types)
-    result_row = {
-        "CASE_ID": case_id, "GROUP_Basename": base_name,
-        "IMAGE_Description": class_result.get("image_description"),
-        "IMAGE_Type": class_result.get("image_type"),
-        "CLASSIFIED_Type": class_result.get("classified_type"),
-        "CLASSIFICATION_Confidence": class_result.get("confidence"),
-        "CLASSIFICATION_Reasoning": class_result.get("reasoning"),
-    }
-    
-    if "error" in class_result or result_row["CLASSIFIED_Type"] not in DOCUMENT_FIELDS:
-        error_msg = class_result.get('error', 'Unsupported or Null Type')
-        result_row["Processing_Status"] = f"Classification Failed: {error_msg}"
-        if result_row.get("CLASSIFIED_Type") == "UNKNOWN":
-             result_row["Processing_Status"] = "Classification OK: UNKNOWN"
+        class_result = await _classify_document_type(job_id, case_id, base_name, document_files, acceptable_types)
+        result_row = {
+            "CASE_ID": case_id, "GROUP_Basename": base_name,
+            "IMAGE_Description": class_result.get("image_description"),
+            "IMAGE_Type": class_result.get("image_type"),
+            "CLASSIFIED_Type": class_result.get("classified_type"),
+            "CLASSIFICATION_Confidence": class_result.get("confidence"),
+            "CLASSIFICATION_Reasoning": class_result.get("reasoning"),
+        }
+        
+        if "error" in class_result or result_row["CLASSIFIED_Type"] not in DOCUMENT_FIELDS:
+            error_msg = class_result.get('error', 'Unsupported or Null Type')
+            result_row["Processing_Status"] = f"Classification Failed: {error_msg}"
+            if result_row.get("CLASSIFIED_Type") == "UNKNOWN":
+                 result_row["Processing_Status"] = "Classification OK: UNKNOWN"
+            return result_row
+
+        classified_type = result_row["CLASSIFIED_Type"]
+        fields_to_extract = DOCUMENT_FIELDS[classified_type]
+        extraction_schema = create_extraction_model(classified_type, fields_to_extract)
+        
+        extract_result = await _extract_data_from_document(
+            job_id, case_id, base_name, document_files, classified_type, fields_to_extract, extraction_schema
+        )
+        
+        if "_error" in extract_result:
+            result_row["Processing_Status"] = f"Extraction Failed: {extract_result['_error']}"
+        else:
+            result_row["Processing_Status"] = "Success"
+            for field in fields_to_extract:
+                original_field_name = field['name']
+                sanitized_base_name = ''.join(c if c.isalnum() else '_' for c in original_field_name)
+                
+                result_row[f"{classified_type}_{original_field_name}_Value"] = extract_result.get(f"{sanitized_base_name}_Value")
+                result_row[f"{classified_type}_{original_field_name}_Confidence"] = extract_result.get(f"{sanitized_base_name}_Confidence")
+                result_row[f"{classified_type}_{original_field_name}_Reasoning"] = extract_result.get(f"{sanitized_base_name}_Reasoning")
+                
         return result_row
-
-    classified_type = result_row["CLASSIFIED_Type"]
-    fields_to_extract = DOCUMENT_FIELDS[classified_type]
-    extraction_schema = create_extraction_model(classified_type, fields_to_extract)
-    
-    extract_result = await _extract_data_from_document(
-        job_id, case_id, base_name, document_files, classified_type, fields_to_extract, extraction_schema
-    )
-    
-    if "_error" in extract_result:
-        result_row["Processing_Status"] = f"Extraction Failed: {extract_result['_error']}"
-    else:
-        result_row["Processing_Status"] = "Success"
-        for field in fields_to_extract:
-            original_field_name = field['name']
-            sanitized_base_name = ''.join(c if c.isalnum() else '_' for c in original_field_name)
-            
-            result_row[f"{classified_type}_{original_field_name}_Value"] = extract_result.get(f"{sanitized_base_name}_Value")
-            result_row[f"{classified_type}_{original_field_name}_Confidence"] = extract_result.get(f"{sanitized_base_name}_Confidence")
-            result_row[f"{classified_type}_{original_field_name}_Reasoning"] = extract_result.get(f"{sanitized_base_name}_Reasoning")
-            
-    return result_row
 
 async def process_zip_file_async(job_id: str, zip_file_path: str, job_statuses: Dict[str, JobStatus]):
     job = job_statuses[job_id]
@@ -182,6 +185,7 @@ async def process_zip_file_async(job_id: str, zip_file_path: str, job_statuses: 
             job.status, job.total_groups = "Processing", len(tasks_to_run)
             job.details = f"Found {job.total_groups} document groups to process."
             log.info(job.details)
+            
             tasks = [process_case_group(job_id, args) for args in tasks_to_run]
             for future in asyncio.as_completed(tasks):
                 try:
@@ -190,10 +194,12 @@ async def process_zip_file_async(job_id: str, zip_file_path: str, job_statuses: 
                     job.groups_processed += 1
                     job.progress_percent = (job.groups_processed / job.total_groups) * 100
                     job.details = f"Processed {job.groups_processed}/{job.total_groups}: Group '{result.get('GROUP_Basename', 'N/A')}'"
-                    log.info(f"Job {job_id}: {job.details}")
+                    log.info(f"Job {job_id}: {job.details} - Progress: {job.progress_percent:.2f}%")
                 except Exception as e:
-                    job.groups_processed += 1
-                    log.exception(f"Job {job_id}: A processing task failed critically: {e}")
+                    job.groups_processed += 1 # Increment even on failure to advance progress
+                    job.progress_percent = (job.groups_processed / job.total_groups) * 100
+                    log.exception(f"Job {job_id}: A processing task failed critically: {e}. Progress: {job.progress_percent:.2f}%")
+
     except Exception as e:
         log.exception(f"Job {job_id} failed: {e}")
         job.status, job.details = "Failed", str(e)

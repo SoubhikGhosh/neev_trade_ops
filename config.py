@@ -10,8 +10,9 @@ API_BASE_URL = os.getenv("API_BASE_URL", "https://10.216.70.62/DEV/litellm")
 API_KEY = os.getenv("API_KEY", "sk-gWXqVa4oxbt-9HnWHHBdsg")
 API_MODEL = os.getenv("API_MODEL", "gemini-2.5-flash")
 API_TIMEOUT = int(os.getenv("API_TIMEOUT", 300))
-API_MAX_RETRIES = int(os.getenv("API_MAX_RETRIES", 3))
-API_CONCURRENCY_LIMIT = int(os.getenv("API_CONCURRENCY_LIMIT", 10))
+API_MAX_RETRIES = int(os.getenv("API_MAX_RETRIES", 50))
+API_CONCURRENCY_LIMIT = int(os.getenv("API_CONCURRENCY_LIMIT", 1))
+EXPONENTIAL_BACKOFF_FACTOR = float(os.getenv("EXPONENTIAL_BACKOFF_FACTOR", 1.5))
 
 SUPPORTED_MIME_TYPES = {
     "application/pdf": "PDF",
@@ -25,8 +26,6 @@ SUPPORTED_FILE_EXTENSIONS = [".pdf", ".png", ".jpg", ".jpeg"]
 MAX_WORKERS = 100
 TEMP_DIR = "temp_processing"
 OUTPUT_FILENAME = "extracted_data.csv"
-DEFAULT_CONFIDENCE_THRESHOLD = 0.60
-EXTRACTION_MAX_ATTEMPTS = 100
 JSON_CORRECTION_ATTEMPTS = 3
 
 LOG_FILE = "app_log.log"

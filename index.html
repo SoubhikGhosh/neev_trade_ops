@@ -55,26 +55,22 @@
             <p class="text-gray-400 mt-1">Live metrics from the document processing pipeline.</p>
         </header>
 
-        <!-- FIX: Updated the error message to be more explicit and provide a direct solution -->
         <div id="connection-error" class="hidden max-w-7xl mx-auto mb-4 p-4 rounded-lg bg-red-800 border border-red-600 text-red-200">
             <h3 class="font-bold text-lg">Connection Error!</h3>
-            <p class="mt-2 text-sm">Could not connect to the backend log stream at `http://127.0.0.1:8000/stream-logs`. This is a Cross-Origin Resource Sharing (CORS) issue because the backend is not configured to accept requests from this page.</p>
-            <p class="mt-3 text-sm"><strong>To fix this:</strong> Please add the `CORSMiddleware` to your Python `main.py` file. A common mistake is to include `allow_credentials=True` with wildcard origins (`allow_origins=["*"]`), which browsers do not permit.</p>
-            <p class="mt-2 text-sm">The correct configuration for your backend should be:</p>
-            <pre class="mt-1 text-xs bg-gray-900 p-3 rounded-md w-full overflow-x-auto"><code>from fastapi.middleware.cors import CORSMiddleware
-
-# ... (your FastAPI app initialization, e.g., app = FastAPI(...))
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
-)</code></pre>
+            <p class="mt-2 text-sm">Could not connect to the backend log stream at `http://127.0.0.1:8000/stream-logs`. Ensure your FastAPI backend is running.</p>
             <p id="reconnect-message" class="mt-3 text-sm text-amber-300">Attempting to reconnect in 5 seconds...</p>
         </div>
 
-        <!-- KPI Cards -->
+        <div class="mb-8">
+            <h2 class="text-lg font-semibold text-white mb-3">Check Job Status</h2>
+            <div class="flex items-center gap-4 bg-gray-800 border border-gray-700 p-4 rounded-lg">
+                <input type="text" id="job-id-input" placeholder="Enter Job ID (auto-filled on new job)" class="bg-gray-900 text-white w-full rounded-md p-2 border border-gray-600 focus:ring-2 focus:ring-indigo-500 focus:outline-none">
+                <button id="get-status-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-md whitespace-nowrap">Get Status</button>
+            </div>
+            <div id="job-status-display" class="mt-4 p-4 bg-gray-800 border border-gray-700 rounded-lg text-sm hidden">
+                </div>
+        </div>
+
         <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
             <div class="kpi-card p-4 rounded-lg">
                 <h3 class="text-sm font-medium text-gray-400">Total Groups</h3>
@@ -102,19 +98,15 @@ app.add_middleware(
             </div>
         </div>
 
-        <!-- Main Content Area -->
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
             
-            <!-- Charts Column -->
             <div class="lg:col-span-2 flex flex-col gap-8">
-                <!-- Classification Chart -->
                 <div class="chart-wrapper p-4 rounded-lg">
                     <h2 class="text-lg font-semibold mb-4">Classification Time (Last 10)</h2>
                     <div class="relative h-52">
                         <canvas id="classificationChart"></canvas>
                     </div>
                 </div>
-                <!-- Extraction Chart -->
                 <div class="chart-wrapper p-4 rounded-lg">
                     <h2 class="text-lg font-semibold mb-4">Extraction Time (Last 10)</h2>
                     <div class="relative h-52">
@@ -123,7 +115,6 @@ app.add_middleware(
                 </div>
             </div>
 
-            <!-- Live Log Feed Column -->
             <div class="log-feed-container rounded-lg font-mono text-xs overflow-y-auto">
                 <h2 class="text-lg font-semibold sticky top-0 bg-black p-4 z-10">Live Log Feed</h2>
                 <div id="log-container" class="px-4 pb-4"></div>
@@ -131,7 +122,6 @@ app.add_middleware(
 
         </div>
 
-        <!-- Status Table -->
         <div class="mt-8">
             <h2 class="text-lg font-semibold mb-4">Processing Group Status (Last 10)</h2>
             <div class="bg-gray-800 rounded-lg overflow-hidden border border-gray-700">
@@ -185,6 +175,9 @@ app.add_middleware(
             const classCtx = document.getElementById('classificationChart').getContext('2d');
             const extrCtx = document.getElementById('extractionChart').getContext('2d');
             const errorDiv = document.getElementById('connection-error');
+            const jobIdInput = document.getElementById('job-id-input');
+            const getStatusBtn = document.getElementById('get-status-btn');
+            const jobStatusDisplay = document.getElementById('job-status-display');
             
             // --- Chart.js Setup ---
             function createChart(context, label, borderColor, bgColor) {
@@ -215,6 +208,64 @@ app.add_middleware(
             }
             const classificationChart = createChart(classCtx, 'Classification Time (s)', 'rgb(59, 130, 246)', 'rgba(59, 130, 246, 0.5)');
             const extractionChart = createChart(extrCtx, 'Extraction Time (s)', 'rgb(236, 72, 153)', 'rgba(236, 72, 153, 0.5)');
+            
+            // --- Job Status Fetcher ---
+            let statusInterval;
+            async function fetchJobStatus() {
+                const jobId = jobIdInput.value.trim();
+                if (!jobId) {
+                    jobStatusDisplay.innerHTML = `<p class="text-amber-400">Please enter a Job ID.</p>`;
+                    jobStatusDisplay.classList.remove('hidden');
+                    return;
+                }
+
+                if (statusInterval) clearInterval(statusInterval);
+
+                const updateStatus = async () => {
+                    jobStatusDisplay.classList.remove('hidden');
+                    try {
+                        const response = await fetch(`http://127.0.0.1:8000/status/${jobId}`);
+                        const data = await response.json();
+
+                        if (!response.ok) {
+                            jobStatusDisplay.innerHTML = `<p class="text-red-400">Error: ${data.detail || 'Job not found'}</p>`;
+                            clearInterval(statusInterval);
+                            return;
+                        }
+                        
+                        const progressPercentage = data.progress_percent.toFixed(2);
+                        const resultLink = data.result_path ? `<a href="${data.result_path}" class="text-indigo-400 hover:underline" download>Download Result</a>` : 'Not yet available';
+                        
+                        jobStatusDisplay.innerHTML = `
+                            <div class="grid grid-cols-2 gap-x-4 gap-y-2">
+                                <p><strong>Job ID:</strong></p><p class="font-mono">${data.job_id}</p>
+                                <p><strong>Status:</strong></p><p class="font-semibold ${data.status === 'Completed' ? 'text-green-400' : 'text-amber-400'}">${data.status}</p>
+                                <p><strong>Details:</strong></p><p>${data.details}</p>
+                                <p><strong>Progress:</strong></p>
+                                <div>
+                                    <div class="w-full bg-gray-700 rounded-full h-2.5">
+                                        <div class="bg-indigo-500 h-2.5 rounded-full" style="width: ${progressPercentage}%"></div>
+                                    </div>
+                                    <p class="text-right text-xs">${progressPercentage}% (${data.groups_processed}/${data.total_groups})</p>
+                                </div>
+                                <p><strong>Result:</strong></p><p>${resultLink}</p>
+                            </div>
+                        `;
+
+                        if (data.status === 'Completed' || data.status === 'Failed') {
+                            clearInterval(statusInterval);
+                        }
+                    } catch (error) {
+                        console.error("Failed to fetch job status:", error);
+                        jobStatusDisplay.innerHTML = `<p class="text-red-400">Could not connect to the server to fetch status.</p>`;
+                        clearInterval(statusInterval);
+                    }
+                };
+                
+                updateStatus(); // Initial call
+                statusInterval = setInterval(updateStatus, 5000); // Poll every 5 seconds
+            }
+            getStatusBtn.addEventListener('click', fetchJobStatus);
 
             // --- UI Update Functions ---
             function updateKpis() {
@@ -249,7 +300,7 @@ app.add_middleware(
                 const row = tableBody.insertRow(0);
                 row.className = 'bg-gray-800 border-b border-gray-700 hover:bg-gray-600';
                 const statusColors = {
-                    'Successful': 'bg-green-900 text-green-300',
+                    'Success': 'bg-green-900 text-green-300',
                     'Failed': 'bg-red-900 text-red-300',
                     'Corrected': 'bg-yellow-900 text-yellow-300',
                 };
@@ -277,6 +328,14 @@ app.add_middleware(
 
             function parseLog(logString) {
                 addLogEntry(logString);
+                
+                const jobIdRegex = /Job ([a-f0-9\-]{36}) started/;
+                let jobIdMatch = logString.match(jobIdRegex);
+                if (jobIdMatch && !jobIdInput.value) {
+                    jobIdInput.value = jobIdMatch[1];
+                    fetchJobStatus(); // Automatically start polling status for the new job
+                }
+
                 const successRegex = /\[Job:(?<jobId>[^|]+)\|Case:(?<caseId>[^|]+)\|Group:'(?<group>[^']+)'.*?Task:(?<task>[^\]]+)\].*?successful. Duration: (?<duration>[\d.]+) seconds/;
                 const errorRegex = /\[Job:(?<jobId>[^|]+)\|Case:(?<caseId>[^|]+)\|Group:'(?<group>[^']+)'.*?Task:(?<task>[^\]]+)\].*?error after (?<duration>[\d.]+)s: (?<details>.*)/;
                 const totalGroupsRegex = /Found (\d+) document groups to process/;
@@ -287,7 +346,7 @@ app.add_middleware(
                     const { caseId, group, task, duration } = match.groups;
                     const taskType = task.split('|')[0];
                     const isCorrected = logString.includes('CorrectionAttempt');
-                    const status = isCorrected ? 'Corrected' : 'Successful';
+                    const status = isCorrected ? 'Corrected' : 'Success';
                     const durationFloat = parseFloat(duration);
                     if (taskType === 'Classification') {
                         state.successfulClassifications++;
@@ -314,8 +373,7 @@ app.add_middleware(
 
             // --- Live Connection Setup ---
             function connect() {
-                // Replace with your actual backend URL if it's different
-                const eventSource = new EventSource("http://127.0.0.1:8000/stream-logs");
+                const eventSource = new EventSource("http://127.0.0.1:8080/stream-logs");
 
                 eventSource.onmessage = function(event) {
                     parseLog(event.data);
@@ -323,14 +381,12 @@ app.add_middleware(
 
                 eventSource.onerror = function(err) {
                     console.error("EventSource failed:", err);
-                    errorDiv.classList.remove('hidden'); // Show the detailed error message
+                    errorDiv.classList.remove('hidden');
                     eventSource.close();
-                    // Try to reconnect every 5 seconds
                     setTimeout(connect, 5000); 
                 };
 
                 eventSource.onopen = function() {
-                    // Hide error message on successful connection
                     errorDiv.classList.add('hidden');
                     addLogEntry("--- Connected to live log stream ---", "log-warning");
                      if(tableBody.rows.length === 1 && tableBody.rows[0].cells[0].textContent === "Connecting to log stream..."){

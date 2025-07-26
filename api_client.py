@@ -14,7 +14,6 @@ from config import (
     API_BASE_URL, API_KEY, API_MODEL, API_TIMEOUT, API_MAX_RETRIES, API_CONCURRENCY_LIMIT, EXPONENTIAL_BACKOFF_FACTOR
 )
 
-
 class APIClient:
     """A thread-safe, async client for the LLM API using the response_format feature."""
     def __init__(self):
@@ -61,19 +60,19 @@ class APIClient:
             for attempt in range(API_MAX_RETRIES):
                 response = None
                 try:
-                    # Call the OpenAI API with the response_format schema
                     response = await self._client.beta.chat.completions.parse(
                         model=model_to_use,
                         messages=messages,
                         response_format=response_schema,
                     )
                     
-                    # The response.parsed object is the validated Pydantic model
-                    parsed_response = response.parsed
+                    if not (response.choices and response.choices[0].message and response.choices[0].message.parsed):
+                         raise TypeError("Model response did not contain the expected parsed object.")
+
+                    parsed_response = response.choices[0].message.parsed
                     
                     duration = time.perf_counter() - start_time
 
-                    # MODIFICATION: Add detailed token logging
                     if response.usage:
                         log.info(f"[{context}] LLM call successful. Duration: {duration:.2f}s. "
                                  f"Tokens -> Prompt: {response.usage.prompt_tokens}, "
@@ -82,7 +81,7 @@ class APIClient:
                     else:
                          log.info(f"[{context}] LLM call and parsing successful. Duration: {duration:.2f} seconds. Usage data not available.")
 
-                    return parsed_response
+                    return parsed_response.model_dump()
 
                 except (APIConnectionError, APIStatusError) as e:
                     log.warning(f"[{context}] Network/API error on attempt {attempt + 1}/{API_MAX_RETRIES}: {e}. Retrying...")
@@ -92,12 +91,13 @@ class APIClient:
                         return {"error": f"API Error after retries: {str(e)}", "raw_response": str(e)}
 
                 except (ValidationError, IndexError, KeyError, TypeError) as e:
-                    # This error is now much less likely for formatting issues, but good to keep for validation logic.
                     log.warning(f"[{context}] Recoverable parsing/validation error on attempt {attempt + 1}/{API_MAX_RETRIES}: {e}. Retrying...")
                     if attempt == API_MAX_RETRIES - 1:
                         duration = time.perf_counter() - start_time
                         log.error(f"[{context}] Final attempt failed with validation error. Duration: {duration:.2f}s: {e}")
-                        raw_response_content = response.message.content if response and response.message else "No valid response content."
+                        raw_response_content = "Response was empty or did not contain valid content."
+                        if response and response.choices and response.choices[0].message:
+                           raw_response_content = response.choices[0].message.content
                         return {"error": f"Schema Validation Error: {str(e)}", "raw_response": raw_response_content}
                 
                 except Exception as e:
@@ -111,5 +111,5 @@ class APIClient:
 
     async def close(self):
         if self._client and not self._client.is_closed():
-            await self._client.close()
+            await self.close()
             log.info("Closed OpenAI AsyncClient.")

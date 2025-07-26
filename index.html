@@ -30,7 +30,7 @@
         .log-info { color: #818CF8; } /* text-indigo-400 */
         .log-error { color: #F87171; } /* text-red-400 */
         .log-warning { color: #FBBF24; } /* text-amber-400 */
-        
+
         /* Custom scrollbar for a better dark mode experience */
         ::-webkit-scrollbar {
             width: 8px;
@@ -107,7 +107,7 @@
         </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            
+
             <div class="lg:col-span-2 flex flex-col gap-8">
                 <div class="chart-wrapper p-4 rounded-lg">
                     <h2 class="text-lg font-semibold mb-4">Classification Time (Last 10)</h2>
@@ -167,7 +167,6 @@
                 successfulClassifications: 0,
                 totalExtractionTime: 0,
                 successfulExtractions: 0,
-                // MODIFICATION: Add state for tokens
                 totalClassificationTokens: 0,
                 totalExtractionTokens: 0,
             };
@@ -192,7 +191,7 @@
             const jobIdInput = document.getElementById('job-id-input');
             const getStatusBtn = document.getElementById('get-status-btn');
             const jobStatusDisplay = document.getElementById('job-status-display');
-            
+
             // --- Chart.js Setup ---
             function createChart(context, label, borderColor, bgColor) {
                 return new Chart(context, {
@@ -203,7 +202,7 @@
             }
             const classificationChart = createChart(classCtx, 'Classification Time (s)', 'rgb(59, 130, 246)', 'rgba(59, 130, 246, 0.5)');
             const extractionChart = createChart(extrCtx, 'Extraction Time (s)', 'rgb(236, 72, 153)', 'rgba(236, 72, 153, 0.5)');
-            
+
             // --- Job Status Fetcher ---
             let statusInterval;
             async function fetchJobStatus() {
@@ -305,38 +304,41 @@
                     jobIdInput.value = jobIdMatch[1];
                     fetchJobStatus();
                 }
-                
+
+                // UPDATED REGEX to handle tasks like Extraction(GroupName)
                 const successRegex = /\[Job:(?<jobId>[^|]+)\|Case:(?<caseId>[^|]+)\|Group:'(?<group>[^']+)'.*?Task:(?<task>[^\]]+)\].*?successful. Duration: (?<duration>[\d.]+s). Tokens ->.*?Total: (?<totalTokens>\d+)/;
-                const errorRegex = /\[Job:(?<jobId>[^|]+)\|Case:(?<caseId>[^|]+)\|Group:'(?<group>[^']+)'.*?Task:(?<task>[^\]]+)\].*?(?:error after|failed after all retries).*?Duration: (?<duration>[\d.]+)s: (?<details>.*)/;
+                const errorRegex = /\[Job:(?<jobId>[^|]+)\|Case:(?<caseId>[^|]+)\|Group:'(?<group>[^']+)'.*?Task:(?<task>[^\]]+)\].*?Extraction failed on group.*?: (?<details>.*)/;
                 const totalGroupsRegex = /Found (\d+) document groups to process/;
                 const correctionRegex = /Running correction loop/;
                 let match;
-                
+
                 if (match = logString.match(successRegex)) {
                     const { caseId, group, task, duration, totalTokens } = match.groups;
-                    const taskType = task.split('|')[0];
+                    const taskType = task.split('(')[0]; // Gets "Extraction" from "Extraction(ApplicantInfo)"
                     const isCorrected = logString.includes('CorrectionAttempt');
                     const status = isCorrected ? 'Corrected' : 'Success';
                     const durationFloat = parseFloat(duration);
                     const tokensInt = parseInt(totalTokens, 10);
-                    
-                    if (taskType === 'Classification') { 
-                        state.successfulClassifications++; 
-                        state.totalClassificationTime += durationFloat; 
-                        state.totalClassificationTokens += tokensInt; // Add tokens to state
+
+                    if (taskType === 'Classification') {
+                        state.successfulClassifications++;
+                        state.totalClassificationTime += durationFloat;
+                        state.totalClassificationTokens += tokensInt;
                         addChartData(classificationChart, group, durationFloat);
-                    } else if (taskType === 'Extraction') { 
-                        state.successfulExtractions++; 
-                        state.totalExtractionTime += durationFloat; 
-                        state.totalExtractionTokens += tokensInt; // Add tokens to state
+                        addTableRow({ caseId, group, task: taskType, status, duration: duration.replace('s', ''), details: 'Processed successfully' });
+                    } else if (taskType === 'Extraction') {
+                        state.successfulExtractions++;
+                        state.totalExtractionTime += durationFloat;
+                        state.totalExtractionTokens += tokensInt;
                         addChartData(extractionChart, group, durationFloat);
+                        // For extraction, show the specific sub-task in the table
+                        addTableRow({ caseId, group, task, status, duration: duration.replace('s', ''), details: isCorrected ? 'Recovered via self-correction' : 'Processed successfully' });
                     }
-                    addTableRow({ caseId, group, task: taskType, status, duration: duration.replace('s', ''), details: isCorrected ? 'Recovered via self-correction' : 'Processed successfully' });
                 } else if (match = logString.match(errorRegex)) {
-                    const { caseId, group, task, duration, details } = match.groups;
+                    const { caseId, group, task, details } = match.groups;
                     state.failedGroups++;
                     state.apiErrors++;
-                    addTableRow({ caseId, group, task: task.split('|')[0], status: 'Failed', duration: duration.replace('s', ''), details: details.trim() });
+                    addTableRow({ caseId, group, task: task.split('(')[0], status: 'Failed', duration: 'N/A', details: details.trim() });
                 } else if (match = logString.match(totalGroupsRegex)) {
                     state.totalGroups = parseInt(match[1], 10);
                 } else if (match = logString.match(correctionRegex)) {
@@ -354,7 +356,7 @@
                     errorDiv.classList.remove('hidden');
                     reconnectMessage.textContent = 'Connection lost. Displayed data is the last known state. Attempting to reconnect in 5 seconds...';
                     eventSource.close();
-                    setTimeout(connect, 5000); 
+                    setTimeout(connect, 5000);
                 };
                 eventSource.onopen = () => {
                     errorDiv.classList.add('hidden');

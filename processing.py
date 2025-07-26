@@ -55,65 +55,86 @@ async def _classify_document_type(job_id: str, case_id: str, base_name: str, doc
     class_result = await api_client.call_llm_with_parsing(
         prompt, sorted_docs, ClassificationResponse, context=context
     )
-    
+
     if isinstance(class_result, ClassificationResponse):
         return class_result.model_dump()
     else:
         return {"error": class_result.get("error", "Unknown classification failure.")}
 
-
 async def _extract_data_from_document(
-    job_id: str, case_id: str, base_name: str, document_files: List[Dict], classified_doc_type: str,
-    fields_to_extract: List[Dict], extraction_schema: Type[BaseModel]
+    job_id: str, case_id: str, base_name: str, document_files: List[Dict], classified_doc_type: str
 ) -> Dict[str, Any]:
     """
-    Attempts to extract data, with a self-correction loop if the initial attempt fails.
+    Extracts data by iterating through logical field groups, with a self-correction retry
+    loop implemented for each individual group.
     """
-    context = f"Job:{job_id}|Case:{case_id}|Group:'{base_name}'|Task:Extraction"
+    context_prefix = f"Job:{job_id}|Case:{case_id}|Group:'{base_name}'|Task:Extraction"
     sorted_docs = _prepare_document_files(document_files)
 
-    field_list_str = "\n".join([f"- {f['name']}: {f['description']}" for f in fields_to_extract])
+    field_groups = DOCUMENT_FIELDS.get(classified_doc_type)
+    if not isinstance(field_groups, dict):
+        return {"_error": f"Field groups for doc type '{classified_doc_type}' are not defined in config."}
 
-    initial_prompt = EXTRACTION_PROMPT_TEMPLATE.format(
-        doc_type=classified_doc_type, case_id=case_id, num_pages=len(sorted_docs), field_list_str=field_list_str
-    )
+    final_extraction_results = {}
 
-    response_data = await api_client.call_llm_with_parsing(
-        initial_prompt, sorted_docs, extraction_schema, context
-    )
+    for group_name, fields_to_extract in field_groups.items():
+        group_context = f"{context_prefix}({group_name})"
+        log.info(f"[{group_context}] Starting extraction for field group.")
 
-    if isinstance(response_data, BaseModel):
-        return response_data.model_dump()
+        field_list_str = "\n".join([f"- {f['name']}: {f['description']}" for f in fields_to_extract])
+        extraction_schema = create_extraction_model(f"{classified_doc_type}{group_name}", fields_to_extract)
 
-    log.warning(f"[{context}] Initial extraction failed. Starting self-correction attempts...")
-    
-    last_error_info = response_data
-    for i in range(JSON_CORRECTION_ATTEMPTS):
-        correction_context = f"{context}|CorrectionAttempt:{i+1}"
-        log.info(f"[{correction_context}] Running correction loop.")
-        
-        failed_output = last_error_info.get("raw_response", "No raw output from previous attempt.")
-        
-        correction_prompt = CORRECTION_PROMPT_TEMPLATE.format(
-            doc_type=classified_doc_type,
-            case_id=case_id,
-            failed_output=failed_output,
-            field_list_str=field_list_str
+        prompt = EXTRACTION_PROMPT_TEMPLATE.format(
+            doc_type=classified_doc_type, case_id=case_id, num_pages=len(sorted_docs), field_list_str=field_list_str
         )
-        
-        corrected_response = await api_client.call_llm_with_parsing(
-            correction_prompt, sorted_docs, extraction_schema, correction_context, is_correction=True
-        )
-        
-        if isinstance(corrected_response, BaseModel):
-            log.info(f"[{correction_context}] Self-correction successful.")
-            return corrected_response.model_dump()
-        
-        last_error_info = corrected_response
 
-    final_error_msg = f"Extraction failed after {JSON_CORRECTION_ATTEMPTS + 1} attempts. Final error: {last_error_info.get('error')}"
-    log.error(f"[{context}] {final_error_msg}")
-    return {"_error": final_error_msg}
+        # Initial API call for the current group
+        response_data = await api_client.call_llm_with_parsing(
+            prompt, sorted_docs, extraction_schema, group_context
+        )
+
+        # If the initial attempt fails, start the self-correction loop for this group
+        if not isinstance(response_data, BaseModel):
+            log.warning(f"[{group_context}] Initial extraction for group failed. Starting self-correction attempts...")
+            last_error_info = response_data
+            correction_successful = False
+
+            for i in range(JSON_CORRECTION_ATTEMPTS):
+                correction_context = f"{group_context}|CorrectionAttempt:{i+1}"
+                log.info(f"[{correction_context}] Running correction loop.")
+
+                failed_output = last_error_info.get("raw_response", "No raw output from previous attempt.")
+
+                correction_prompt = CORRECTION_PROMPT_TEMPLATE.format(
+                    doc_type=classified_doc_type,
+                    case_id=case_id,
+                    failed_output=failed_output,
+                    field_list_str=field_list_str
+                )
+
+                corrected_response = await api_client.call_llm_with_parsing(
+                    correction_prompt, sorted_docs, extraction_schema, correction_context, is_correction=True
+                )
+
+                if isinstance(corrected_response, BaseModel):
+                    log.info(f"[{correction_context}] Self-correction successful for group.")
+                    response_data = corrected_response
+                    correction_successful = True
+                    break  # Exit the correction loop on success
+
+                last_error_info = corrected_response
+
+            if not correction_successful:
+                error_msg = f"Extraction failed on group '{group_name}' after all retries. Final error: {last_error_info.get('error')}"
+                log.error(f"[{group_context}] {error_msg}")
+                return {"_error": error_msg}
+
+        # Update final results from either the initial success or the corrected success
+        final_extraction_results.update(response_data.model_dump())
+        log.info(f"[{group_context}] Successfully processed field group.")
+
+    return final_extraction_results
+
 
 async def process_case_group(job_id: str, task_args: tuple):
     async with PROCESSING_SEMAPHORE:
@@ -122,41 +143,42 @@ async def process_case_group(job_id: str, task_args: tuple):
         class_result = await _classify_document_type(job_id, case_id, base_name, document_files, acceptable_types)
         result_row = {
             "CASE_ID": case_id, "GROUP_Basename": base_name,
-            "IMAGE_Description": class_result.get("image_description"),
-            "IMAGE_Type": class_result.get("image_type"),
             "CLASSIFIED_Type": class_result.get("classified_type"),
             "CLASSIFICATION_Confidence": class_result.get("confidence"),
             "CLASSIFICATION_Reasoning": class_result.get("reasoning"),
         }
-        
+
         if "error" in class_result or result_row["CLASSIFIED_Type"] not in DOCUMENT_FIELDS:
-            error_msg = class_result.get('error', 'Unsupported or Null Type')
+            error_msg = class_result.get('error', f"Unsupported or Null Type: {result_row['CLASSIFIED_Type']}")
             result_row["Processing_Status"] = f"Classification Failed: {error_msg}"
             if result_row.get("CLASSIFIED_Type") == "UNKNOWN":
                  result_row["Processing_Status"] = "Classification OK: UNKNOWN"
             return result_row
 
         classified_type = result_row["CLASSIFIED_Type"]
-        fields_to_extract = DOCUMENT_FIELDS[classified_type]
-        extraction_schema = create_extraction_model(classified_type, fields_to_extract)
-        
+
         extract_result = await _extract_data_from_document(
-            job_id, case_id, base_name, document_files, classified_type, fields_to_extract, extraction_schema
+            job_id, case_id, base_name, document_files, classified_type
         )
-        
+
         if "_error" in extract_result:
             result_row["Processing_Status"] = f"Extraction Failed: {extract_result['_error']}"
         else:
             result_row["Processing_Status"] = "Success"
-            for field in fields_to_extract:
+            # We must iterate through the original config to find all possible fields
+            all_fields_for_type = [field for group in DOCUMENT_FIELDS[classified_type].values() for field in group]
+            for field in all_fields_for_type:
                 original_field_name = field['name']
+                # Sanitize the name to match the keys in the Pydantic model dump
                 sanitized_base_name = ''.join(c if c.isalnum() else '_' for c in original_field_name)
-                
+
+                # Populate the final result row from the combined extraction dictionary
                 result_row[f"{classified_type}_{original_field_name}_Value"] = extract_result.get(f"{sanitized_base_name}_Value")
                 result_row[f"{classified_type}_{original_field_name}_Confidence"] = extract_result.get(f"{sanitized_base_name}_Confidence")
                 result_row[f"{classified_type}_{original_field_name}_Reasoning"] = extract_result.get(f"{sanitized_base_name}_Reasoning")
-                
+
         return result_row
+
 
 async def process_zip_file_async(job_id: str, zip_file_path: str, job_statuses: Dict[str, JobStatus]):
     job = job_statuses[job_id]
@@ -182,7 +204,7 @@ async def process_zip_file_async(job_id: str, zip_file_path: str, job_statuses: 
             job.status, job.total_groups = "Processing", len(tasks_to_run)
             job.details = f"Found {job.total_groups} document groups to process."
             log.info(job.details)
-            
+
             tasks = [process_case_group(job_id, args) for args in tasks_to_run]
             for future in asyncio.as_completed(tasks):
                 try:

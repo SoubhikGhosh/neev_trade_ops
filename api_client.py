@@ -18,7 +18,7 @@ class APIClient:
     """A thread-safe, async client for the LLM API using the response_format feature."""
     def __init__(self):
         http_client = httpx.AsyncClient(http2=True, verify=False, timeout=API_TIMEOUT)
-        
+
         self._client = AsyncOpenAI(
             api_key=API_KEY, base_url=API_BASE_URL, max_retries=0, http_client=http_client
         )
@@ -65,7 +65,8 @@ class APIClient:
             log.info(log_message)
 
             start_time = time.perf_counter()
-            
+            raw_response_content = "Raw content not captured before error."
+
             try:
                 # STEP 1: Call the standard .create method to get the raw response object.
                 completion = await self._client.chat.completions.create(
@@ -73,17 +74,16 @@ class APIClient:
                     messages=messages,
                     response_format={"type": "json_object"},
                     temperature=0.0,
-                    max_tokens=50000 # This is still the most likely fix
+                    max_tokens=8192 # Keep a reasonable limit for smaller chunks
                 )
 
                 # STEP 2: Immediately get the raw string content and log it.
-                # This guarantees we see the output, regardless of whether it's valid JSON.
                 raw_response_content = completion.choices[0].message.content
-                log.info(f"[{context}] RAW RESPONSE RECEIVED FROM LLM:\n---START---\n{raw_response_content}\n---END---")
+                log.debug(f"[{context}] RAW RESPONSE RECEIVED FROM LLM:\n---START---\n{raw_response_content}\n---END---")
 
                 # STEP 3: Manually validate the raw string against our Pydantic schema.
                 parsed_response = response_schema.model_validate_json(raw_response_content)
-                
+
                 duration = time.perf_counter() - start_time
                 if completion.usage:
                     log.info(f"[{context}] LLM call successful. Duration: {duration:.2f}s. "
@@ -92,7 +92,7 @@ class APIClient:
                                 f"Total: {completion.usage.total_tokens}")
                 else:
                     log.info(f"[{context}] LLM call and parsing successful. Duration: {duration:.2f}s. Usage data not available.")
-                
+
                 return parsed_response
 
             except ValidationError as e:
@@ -101,7 +101,7 @@ class APIClient:
                 log.warning(f"[{context}] Pydantic validation failed. This will trigger the correction logic. Error: {e}")
                 # We return raw_response_content which we captured before the error.
                 return {"error": f"Schema Validation Error: {str(e)}", "raw_response": raw_response_content}
-            
+
             except (APIConnectionError, APIStatusError) as e:
                 # Handle network errors separately
                 duration = time.perf_counter() - start_time
@@ -111,9 +111,8 @@ class APIClient:
             except Exception as e:
                 duration = time.perf_counter() - start_time
                 log.error(f"[{context}] Unexpected non-recoverable error. Duration: {duration:.2f}s: {e.__class__.__name__} - {e}")
-                # Try to get raw content if it exists, otherwise provide a generic error
-                raw_content_for_error = locals().get("raw_response_content", "Raw content not available.")
-                return {"error": f"Application Error: {str(e)}", "raw_response": raw_content_for_error}
+                # Return the raw content if we have it, otherwise the generic error.
+                return {"error": f"Application Error: {str(e)}", "raw_response": raw_response_content}
 
     async def close(self):
         if self._client and not self._client.is_closed():

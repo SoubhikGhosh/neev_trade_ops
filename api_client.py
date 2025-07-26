@@ -43,22 +43,23 @@ class APIClient:
         return [{"role": "user", "content": content_parts}]
 
     async def call_llm_with_parsing(
-        self, 
-        prompt_text: str, 
-        document_files: List[Dict], 
+        self,
+        prompt_text: str,
+        document_files: List[Dict],
         response_schema: Type[BaseModel],
-        context: str, 
+        context: str,
         is_correction: bool = False,
         model_override: str = None
     ) -> Union[BaseModel, Dict]:
         """
-        Forces the LLM to return a specific Pydantic schema using the .parse() method.
+        Forces the LLM to return a specific Pydantic schema. It now manually calls the
+        create method to ensure the raw response can be logged before parsing.
         """
         async with self._semaphore:
             model_to_use = model_override or API_MODEL
             messages = self._prepare_request_messages(prompt_text, document_files)
-            
-            log_message = f"[{context}] Calling model '{model_to_use}' with {len(document_files)} page(s) using .parse()."
+
+            log_message = f"[{context}] Calling model '{model_to_use}' with {len(document_files)} page(s)."
             if is_correction:
                 log_message += " (Correction Attempt)"
             log.info(log_message)
@@ -66,52 +67,53 @@ class APIClient:
             start_time = time.perf_counter()
             
             try:
-                # Using .parse() with simplified prompts is the most reliable method.
-                # temperature=0.0 makes the model's output highly deterministic.
-                response = await self._client.beta.chat.completions.parse(
+                # STEP 1: Call the standard .create method to get the raw response object.
+                completion = await self._client.chat.completions.create(
                     model=model_to_use,
                     messages=messages,
-                    response_format=response_schema,
-                    temperature=0.0, # CRITICAL: Ensures consistent, non-creative output
-                    max_tokens=50000
+                    response_format={"type": "json_object"},
+                    temperature=0.0,
+                    max_tokens=50000 # This is still the most likely fix
                 )
-                
-                parsed_response = response.choices[0].message.parsed
-                duration = time.perf_counter() - start_time
 
-                if response.usage:
+                # STEP 2: Immediately get the raw string content and log it.
+                # This guarantees we see the output, regardless of whether it's valid JSON.
+                raw_response_content = completion.choices[0].message.content
+                log.info(f"[{context}] RAW RESPONSE RECEIVED FROM LLM:\n---START---\n{raw_response_content}\n---END---")
+
+                # STEP 3: Manually validate the raw string against our Pydantic schema.
+                parsed_response = response_schema.model_validate_json(raw_response_content)
+                
+                duration = time.perf_counter() - start_time
+                if completion.usage:
                     log.info(f"[{context}] LLM call successful. Duration: {duration:.2f}s. "
-                                f"Tokens -> Prompt: {response.usage.prompt_tokens}, "
-                                f"Completion: {response.usage.completion_tokens}, "
-                                f"Total: {response.usage.total_tokens}")
+                                f"Tokens -> Prompt: {completion.usage.prompt_tokens}, "
+                                f"Completion: {completion.usage.completion_tokens}, "
+                                f"Total: {completion.usage.total_tokens}")
                 else:
                     log.info(f"[{context}] LLM call and parsing successful. Duration: {duration:.2f}s. Usage data not available.")
-
+                
                 return parsed_response
 
             except ValidationError as e:
-                # This is the safety net. If validation fails, this triggers the self-correction loop in processing.py
+                # This block now catches errors from our manual .model_validate_json() call
                 duration = time.perf_counter() - start_time
-                raw_response_content = "Could not retrieve raw response."
-                if hasattr(e, 'json_data'):
-                        raw_response_content = e.json_data
                 log.warning(f"[{context}] Pydantic validation failed. This will trigger the correction logic. Error: {e}")
-
-                log.info(f"[{context}] RAW FAILED RESPONSE FROM LLM:\n---START---\n{raw_response_content}\n---END---")
-                
+                # We return raw_response_content which we captured before the error.
                 return {"error": f"Schema Validation Error: {str(e)}", "raw_response": raw_response_content}
-
+            
             except (APIConnectionError, APIStatusError) as e:
                 # Handle network errors separately
                 duration = time.perf_counter() - start_time
                 log.error(f"[{context}] Network/API error. Duration: {duration:.2f}s: {e}")
-                # We will rely on the main retry loop in processing.py for network issues.
                 return {"error": f"API Error: {str(e)}", "raw_response": str(e)}
 
             except Exception as e:
                 duration = time.perf_counter() - start_time
                 log.error(f"[{context}] Unexpected non-recoverable error. Duration: {duration:.2f}s: {e.__class__.__name__} - {e}")
-                return {"error": f"Application Error: {str(e)}"}
+                # Try to get raw content if it exists, otherwise provide a generic error
+                raw_content_for_error = locals().get("raw_response_content", "Raw content not available.")
+                return {"error": f"Application Error: {str(e)}", "raw_response": raw_content_for_error}
 
     async def close(self):
         if self._client and not self._client.is_closed():

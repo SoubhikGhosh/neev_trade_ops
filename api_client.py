@@ -14,25 +14,14 @@ from config import (
     API_BASE_URL, API_KEY, API_MODEL, API_TIMEOUT, API_MAX_RETRIES, API_CONCURRENCY_LIMIT, EXPONENTIAL_BACKOFF_FACTOR
 )
 
-def _pydantic_to_tool_definition(model: Type[BaseModel]) -> Dict:
-    """Converts a Pydantic model into a JSON Schema dictionary for OpenAI tool calling."""
-    return {
-        "type": "function",
-        "function": {
-            "name": model.__name__,
-            "description": model.__doc__ or f"Extract data using the {model.__name__} schema.",
-            "parameters": model.model_json_schema()
-        }
-    }
 
 class APIClient:
-    """A thread-safe, async client for the LLM API using the official Tool Calling feature."""
+    """A thread-safe, async client for the LLM API using the response_format feature."""
     def __init__(self):
         http_client = httpx.AsyncClient(http2=True, verify=False, timeout=API_TIMEOUT)
         
-        # The `max_retries` here configures the client's internal retry for specific HTTP codes (e.g., 429, 5xx)
         self._client = AsyncOpenAI(
-            api_key=API_KEY, base_url=API_BASE_URL, max_retries=0, http_client=http_client # Set to 0 to use our custom loop
+            api_key=API_KEY, base_url=API_BASE_URL, max_retries=0, http_client=http_client
         )
         self._semaphore = asyncio.Semaphore(API_CONCURRENCY_LIMIT)
         log.info(f"Initialized AsyncOpenAI client with concurrency limit of {API_CONCURRENCY_LIMIT}.")
@@ -59,56 +48,56 @@ class APIClient:
         context: str, model_override: str = None
     ) -> Union[BaseModel, Dict]:
         """
-        Forces the LLM to return a specific Pydantic schema using Tool Calling.
+        Forces the LLM to return a specific Pydantic schema using the response_format parameter.
         Includes resilience with a custom retry loop for network and recoverable application errors.
         """
         async with self._semaphore:
             model_to_use = model_override or API_MODEL
             messages = self._prepare_request_messages(prompt_text, document_files)
-            tool_definition = _pydantic_to_tool_definition(response_schema)
             
-            log.info(f"[{context}] Calling model '{model_to_use}' with {len(document_files)} page(s) using Tool Calling.")
+            log.info(f"[{context}] Calling model '{model_to_use}' with {len(document_files)} page(s) using response_format.")
             start_time = time.perf_counter()
             
             for attempt in range(API_MAX_RETRIES):
                 response = None
                 try:
-                    response = await self._client.chat.completions.create(
+                    # Call the OpenAI API with the response_format schema
+                    response = await self._client.beta.chat.completions.parse(
                         model=model_to_use,
                         messages=messages,
-                        tools=[tool_definition],
-                        tool_choice={"type": "function", "function": {"name": tool_definition["function"]["name"]}},
+                        response_format=response_schema,
                     )
                     
-                    if not (response.choices and response.choices[0].message and response.choices[0].message.tool_calls):
-                        raw_response_content = response.choices[0].message.content if response.choices and response.choices[0].message else "Empty response"
-                        raise TypeError(f"Model response did not contain the expected tool call. Content: {raw_response_content}")
-
-                    tool_call = response.choices[0].message.tool_calls[0]
-                    json_string = tool_call.function.arguments
-
-                    parsed_response = response_schema.model_validate_json(json_string)
+                    # The response.parsed object is the validated Pydantic model
+                    parsed_response = response.parsed
                     
                     duration = time.perf_counter() - start_time
-                    log.info(f"[{context}] LLM call and parsing successful. Duration: {duration:.2f} seconds.")
+
+                    # MODIFICATION: Add detailed token logging
+                    if response.usage:
+                        log.info(f"[{context}] LLM call successful. Duration: {duration:.2f}s. "
+                                 f"Tokens -> Prompt: {response.usage.prompt_tokens}, "
+                                 f"Completion: {response.usage.completion_tokens}, "
+                                 f"Total: {response.usage.total_tokens}")
+                    else:
+                         log.info(f"[{context}] LLM call and parsing successful. Duration: {duration:.2f} seconds. Usage data not available.")
+
                     return parsed_response
 
                 except (APIConnectionError, APIStatusError) as e:
                     log.warning(f"[{context}] Network/API error on attempt {attempt + 1}/{API_MAX_RETRIES}: {e}. Retrying...")
-                    # If this is the last attempt, log the final failure
                     if attempt == API_MAX_RETRIES - 1:
                         duration = time.perf_counter() - start_time
                         log.error(f"[{context}] API call failed after all retries. Duration: {duration:.2f}s: {e}")
                         return {"error": f"API Error after retries: {str(e)}", "raw_response": str(e)}
 
                 except (ValidationError, IndexError, KeyError, TypeError) as e:
-                    log.warning(f"[{context}] Recoverable parsing error on attempt {attempt + 1}/{API_MAX_RETRIES}: {e}. Retrying...")
+                    # This error is now much less likely for formatting issues, but good to keep for validation logic.
+                    log.warning(f"[{context}] Recoverable parsing/validation error on attempt {attempt + 1}/{API_MAX_RETRIES}: {e}. Retrying...")
                     if attempt == API_MAX_RETRIES - 1:
                         duration = time.perf_counter() - start_time
-                        log.error(f"[{context}] Final attempt failed with parsing error. Duration: {duration:.2f}s: {e}")
-                        raw_response_content = "Response was empty or did not contain a valid tool call."
-                        if response and response.choices and response.choices[0].message:
-                           raw_response_content = response.choices[0].message.content or str(response.choices[0].message.tool_calls)
+                        log.error(f"[{context}] Final attempt failed with validation error. Duration: {duration:.2f}s: {e}")
+                        raw_response_content = response.message.content if response and response.message else "No valid response content."
                         return {"error": f"Schema Validation Error: {str(e)}", "raw_response": raw_response_content}
                 
                 except Exception as e:
@@ -119,7 +108,6 @@ class APIClient:
                 await asyncio.sleep(EXPONENTIAL_BACKOFF_FACTOR ** attempt)
             
             return {"error": "All retry attempts failed."}
-
 
     async def close(self):
         if self._client and not self._client.is_closed():

@@ -35,8 +35,6 @@ def _sanitize_llm_output(raw_response: str) -> str:
         json_block = raw_response[start_index : end_index + 1]
 
         # Use regex to remove trailing commas before closing braces/brackets
-        # This finds a comma, optional whitespace, and then a } or ]
-        # and replaces it with just the } or ]
         cleaned_json = re.sub(r",\s*([}\]])", r"\1", json_block)
         
         return cleaned_json
@@ -77,7 +75,7 @@ class APIClient:
         document_files: List[Dict], 
         response_schema: Type[BaseModel],
         context: str, 
-        is_correction: bool = False, # Parameter to indicate a correction call
+        is_correction: bool = False,
         model_override: str = None
     ) -> Union[BaseModel, Dict]:
         """
@@ -97,19 +95,18 @@ class APIClient:
             
             for attempt in range(API_MAX_RETRIES if not is_correction else 1):
                 response = None
+                raw_response_for_correction = None
                 try:
-                    response = await self._client.beta.chat.completions.parse(
+                    # The raw response is stored on the exception object, so we prepare it here
+                    response = await self._client.chat.completions.create(
                         model=model_to_use,
                         messages=messages,
-                        response_format=response_schema,
-                        temperature=0.1, # Reduces verbosity and improves consistency
+                        response_format={"type": "json_object"},
+                        temperature=0.0,
                     )
-                    
-                    if not (response.choices and response.choices[0].message and response.choices[0].message.parsed):
-                         raise TypeError("Model response did not contain the expected parsed object.")
+                    raw_response_for_correction = response.choices[0].message.content
+                    parsed_model = response_schema.model_validate_json(raw_response_for_correction)
 
-                    parsed_response = response.choices[0].message.parsed
-                    
                     duration = time.perf_counter() - start_time
 
                     if response.usage:
@@ -118,9 +115,9 @@ class APIClient:
                                  f"Completion: {response.usage.completion_tokens}, "
                                  f"Total: {response.usage.total_tokens}")
                     else:
-                         log.info(f"[{context}] LLM call and parsing successful. Duration: {duration:.2f} seconds. Usage data not available.")
+                         log.info(f"[{context}] LLM call and parsing successful. Duration: {duration:.2f}s. Usage data not available.")
 
-                    return parsed_response
+                    return parsed_model
 
                 except (APIConnectionError, APIStatusError) as e:
                     log.warning(f"[{context}] Network/API error on attempt {attempt + 1}: {e}. Retrying...")
@@ -132,13 +129,15 @@ class APIClient:
                 except ValidationError as e:
                     duration = time.perf_counter() - start_time
                     log.warning(f"[{context}] Initial Pydantic validation failed: {e}.")
-                    raw_response_content = "Could not retrieve raw response."
-                    if hasattr(e, 'json_data'):
-                         raw_response_content = e.json_data
+                    
+                    # Ensure we have the raw response string to sanitize
+                    if raw_response_for_correction is None:
+                        log.error(f"[{context}] Could not get raw response for sanitization. This should not happen.")
+                        return {"error": "Validation failed without a raw response to process."}
 
                     # --- Programmatic Sanitization Attempt ---
                     log.info(f"[{context}] Attempting programmatic sanitization of the failed JSON.")
-                    sanitized_output = _sanitize_llm_output(raw_response_content)
+                    sanitized_output = _sanitize_llm_output(raw_response_for_correction)
                     
                     try:
                         # Retry parsing with the cleaned output
@@ -147,8 +146,7 @@ class APIClient:
                         return parsed_model
                     except (ValidationError, json.JSONDecodeError) as sanitize_error:
                         log.warning(f"[{context}] Programmatic sanitization failed: {sanitize_error}. This will trigger correction logic.")
-                        # This return will trigger the self-correction logic in processing.py
-                        return {"error": f"Schema Validation Error after sanitization: {str(e)}", "raw_response": raw_response_content}
+                        return {"error": f"Schema Validation Error after sanitization: {str(e)}", "raw_response": raw_response_for_correction}
 
                 except Exception as e:
                     duration = time.perf_counter() - start_time

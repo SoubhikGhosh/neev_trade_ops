@@ -8,7 +8,6 @@ CORRECTION_PROMPT_TEMPLATE = """
 **The flawed, unstructured output from the previous AI was:**
 {failed_output}
 
-
 **Your Task:**
 1.  **Analyze the flawed output.** It may contain partially correct data, explanations, or refusals.
 2.  **Re-examine the original document** (provided as context) and the **Original Extraction Requirements** listed below.
@@ -72,6 +71,8 @@ Provide a value for the following fields based on a meticulous analysis:
 - **0.50 - 0.69 (Low):** Title is absent or ambiguous. Content is missing several
   key indicators.
 - **< 0.50 (Very Low):** Document does not resemble any of the acceptable types.
+
+**IMPORTANT: Your entire response must be ONLY the JSON object, with no introductory text, explanations, or apologies.**
 """
 
 EXTRACTION_PROMPT_TEMPLATE = """
@@ -91,6 +92,8 @@ three keys in your response, following this pattern:
 1.  `FIELD_NAME_Value`: The extracted data.
 2.  `FIELD_NAME_Confidence`: The confidence score for the extraction.
 3.  `FIELD_NAME_Reasoning`: The explanation for the extraction.
+
+**IMPORTANT: Your entire response must be ONLY the JSON object, with no introductory text, explanations, or apologies.**
 
 ---
 **Detailed Instructions for Field Values:**

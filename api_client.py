@@ -4,6 +4,8 @@ import httpx
 import asyncio
 import base64
 import time
+import re
+import json
 from typing import List, Dict, Type, Union
 
 from openai import AsyncOpenAI, APIStatusError, APIConnectionError
@@ -13,6 +15,33 @@ from utils import log, get_mime_type
 from config import (
     API_BASE_URL, API_KEY, API_MODEL, API_TIMEOUT, API_MAX_RETRIES, API_CONCURRENCY_LIMIT, EXPONENTIAL_BACKOFF_FACTOR
 )
+
+def _sanitize_llm_output(raw_response: str) -> str:
+    """
+    Cleans the raw string from an LLM to make it valid JSON.
+    - Extracts content between the first '{' and the last '}'.
+    - Removes trailing commas that cause validation errors.
+    """
+    if not isinstance(raw_response, str):
+        return "" # Return empty string if input is not a string
+
+    # Find the first opening brace and the last closing brace
+    try:
+        start_index = raw_response.find('{')
+        end_index = raw_response.rfind('}')
+        if start_index == -1 or end_index == -1 or start_index > end_index:
+            return raw_response # Return original if no valid JSON object is found
+
+        json_block = raw_response[start_index : end_index + 1]
+
+        # Use regex to remove trailing commas before closing braces/brackets
+        # This finds a comma, optional whitespace, and then a } or ]
+        # and replaces it with just the } or ]
+        cleaned_json = re.sub(r",\s*([}\]])", r"\1", json_block)
+        
+        return cleaned_json
+    except Exception:
+        return raw_response # Failsafe in case of unexpected errors
 
 class APIClient:
     """A thread-safe, async client for the LLM API using the response_format feature."""
@@ -66,14 +95,14 @@ class APIClient:
 
             start_time = time.perf_counter()
             
-            # The retry loop is now simplified as the correction logic is handled outside
-            for attempt in range(API_MAX_RETRIES if not is_correction else 1): # Only retry network errors for corrections
+            for attempt in range(API_MAX_RETRIES if not is_correction else 1):
                 response = None
                 try:
                     response = await self._client.beta.chat.completions.parse(
                         model=model_to_use,
                         messages=messages,
                         response_format=response_schema,
+                        temperature=0.1, # Reduces verbosity and improves consistency
                     )
                     
                     if not (response.choices and response.choices[0].message and response.choices[0].message.parsed):
@@ -101,16 +130,26 @@ class APIClient:
                         return {"error": f"API Error after retries: {str(e)}", "raw_response": str(e)}
 
                 except ValidationError as e:
-                    # This is the critical JSON validation error. We now capture the raw response.
                     duration = time.perf_counter() - start_time
-                    log.warning(f"[{context}] Validation error on attempt {attempt + 1}: {e}. This will trigger correction logic.")
+                    log.warning(f"[{context}] Initial Pydantic validation failed: {e}.")
                     raw_response_content = "Could not retrieve raw response."
-                    # The raw response is now on the exception object itself with recent library versions
                     if hasattr(e, 'json_data'):
                          raw_response_content = e.json_data
+
+                    # --- Programmatic Sanitization Attempt ---
+                    log.info(f"[{context}] Attempting programmatic sanitization of the failed JSON.")
+                    sanitized_output = _sanitize_llm_output(raw_response_content)
                     
-                    return {"error": f"Schema Validation Error: {str(e)}", "raw_response": raw_response_content}
-                
+                    try:
+                        # Retry parsing with the cleaned output
+                        parsed_model = response_schema.model_validate_json(sanitized_output)
+                        log.info(f"[{context}] Programmatic sanitization successful!")
+                        return parsed_model
+                    except (ValidationError, json.JSONDecodeError) as sanitize_error:
+                        log.warning(f"[{context}] Programmatic sanitization failed: {sanitize_error}. This will trigger correction logic.")
+                        # This return will trigger the self-correction logic in processing.py
+                        return {"error": f"Schema Validation Error after sanitization: {str(e)}", "raw_response": raw_response_content}
+
                 except Exception as e:
                     duration = time.perf_counter() - start_time
                     log.error(f"[{context}] Unexpected non-recoverable error. Duration: {duration:.2f}s: {e.__class__.__name__} - {e}")

@@ -73,6 +73,7 @@ class APIClient:
                     messages=messages,
                     response_format=response_schema,
                     temperature=0.0, # CRITICAL: Ensures consistent, non-creative output
+                    max_tokens=50000
                 )
                 
                 parsed_response = response.choices[0].message.parsed

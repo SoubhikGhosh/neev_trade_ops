@@ -71,7 +71,7 @@
                 </div>
         </div>
 
-        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+        <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4 mb-8">
             <div class="kpi-card p-4 rounded-lg">
                 <h3 class="text-sm font-medium text-gray-400">Total Groups</h3>
                 <p id="kpi-total-groups" class="text-3xl font-semibold text-white">0</p>
@@ -84,9 +84,17 @@
                 <h3 class="text-sm font-medium text-gray-400">Avg. Class. Time (s)</h3>
                 <p id="kpi-avg-class-time" class="text-3xl font-semibold text-blue-400">0.00</p>
             </div>
+             <div class="kpi-card p-4 rounded-lg">
+                <h3 class="text-sm font-medium text-gray-400">Avg. Class. Tokens</h3>
+                <p id="kpi-avg-class-tokens" class="text-3xl font-semibold text-blue-400">0</p>
+            </div>
             <div class="kpi-card p-4 rounded-lg">
                 <h3 class="text-sm font-medium text-gray-400">Avg. Extr. Time (s)</h3>
                 <p id="kpi-avg-extr-time" class="text-3xl font-semibold text-pink-400">0.00</p>
+            </div>
+             <div class="kpi-card p-4 rounded-lg">
+                <h3 class="text-sm font-medium text-gray-400">Avg. Extr. Tokens</h3>
+                <p id="kpi-avg-extr-tokens" class="text-3xl font-semibold text-pink-400">0</p>
             </div>
             <div class="kpi-card p-4 rounded-lg">
                 <h3 class="text-sm font-medium text-gray-400">API Errors</h3>
@@ -159,6 +167,9 @@
                 successfulClassifications: 0,
                 totalExtractionTime: 0,
                 successfulExtractions: 0,
+                // MODIFICATION: Add state for tokens
+                totalClassificationTokens: 0,
+                totalExtractionTokens: 0,
             };
 
             // --- DOM Elements ---
@@ -169,6 +180,8 @@
                 avgExtrTime: document.getElementById('kpi-avg-extr-time'),
                 apiErrors: document.getElementById('kpi-api-errors'),
                 corrections: document.getElementById('kpi-corrections'),
+                avgClassTokens: document.getElementById('kpi-avg-class-tokens'),
+                avgExtrTokens: document.getElementById('kpi-avg-extr-tokens'),
             };
             const logContainer = document.getElementById('log-container');
             const tableBody = document.getElementById('status-table-body');
@@ -250,6 +263,8 @@
                 kpi.avgExtrTime.textContent = state.successfulExtractions > 0 ? (state.totalExtractionTime / state.successfulExtractions).toFixed(2) : '0.00';
                 kpi.apiErrors.textContent = state.apiErrors;
                 kpi.corrections.textContent = state.correctionAttempts;
+                kpi.avgClassTokens.textContent = state.successfulClassifications > 0 ? (state.totalClassificationTokens / state.successfulClassifications).toFixed(0) : '0';
+                kpi.avgExtrTokens.textContent = state.successfulExtractions > 0 ? (state.totalExtractionTokens / state.successfulExtractions).toFixed(0) : '0';
             }
 
             function addChartData(chart, label, duration) {
@@ -291,27 +306,37 @@
                     fetchJobStatus();
                 }
                 
-                const successRegex = /\[Job:(?<jobId>[^|]+)\|Case:(?<caseId>[^|]+)\|Group:'(?<group>[^']+)'.*?Task:(?<task>[^\]]+)\].*?successful. Duration: (?<duration>[\d.]+) seconds/;
-                // MODIFICATION: Updated regex to capture both "error after" and "failed after" messages
+                const successRegex = /\[Job:(?<jobId>[^|]+)\|Case:(?<caseId>[^|]+)\|Group:'(?<group>[^']+)'.*?Task:(?<task>[^\]]+)\].*?successful. Duration: (?<duration>[\d.]+s). Tokens ->.*?Total: (?<totalTokens>\d+)/;
                 const errorRegex = /\[Job:(?<jobId>[^|]+)\|Case:(?<caseId>[^|]+)\|Group:'(?<group>[^']+)'.*?Task:(?<task>[^\]]+)\].*?(?:error after|failed after all retries).*?Duration: (?<duration>[\d.]+)s: (?<details>.*)/;
                 const totalGroupsRegex = /Found (\d+) document groups to process/;
                 const correctionRegex = /Running correction loop/;
                 let match;
                 
                 if (match = logString.match(successRegex)) {
-                    const { caseId, group, task, duration } = match.groups;
+                    const { caseId, group, task, duration, totalTokens } = match.groups;
                     const taskType = task.split('|')[0];
                     const isCorrected = logString.includes('CorrectionAttempt');
                     const status = isCorrected ? 'Corrected' : 'Success';
                     const durationFloat = parseFloat(duration);
-                    if (taskType === 'Classification') { state.successfulClassifications++; state.totalClassificationTime += durationFloat; addChartData(classificationChart, group, durationFloat); } 
-                    else if (taskType === 'Extraction') { state.successfulExtractions++; state.totalExtractionTime += durationFloat; addChartData(extractionChart, group, durationFloat); }
-                    addTableRow({ caseId, group, task: taskType, status, duration, details: isCorrected ? 'Recovered via self-correction' : 'Processed successfully' });
+                    const tokensInt = parseInt(totalTokens, 10);
+                    
+                    if (taskType === 'Classification') { 
+                        state.successfulClassifications++; 
+                        state.totalClassificationTime += durationFloat; 
+                        state.totalClassificationTokens += tokensInt; // Add tokens to state
+                        addChartData(classificationChart, group, durationFloat);
+                    } else if (taskType === 'Extraction') { 
+                        state.successfulExtractions++; 
+                        state.totalExtractionTime += durationFloat; 
+                        state.totalExtractionTokens += tokensInt; // Add tokens to state
+                        addChartData(extractionChart, group, durationFloat);
+                    }
+                    addTableRow({ caseId, group, task: taskType, status, duration: duration.replace('s', ''), details: isCorrected ? 'Recovered via self-correction' : 'Processed successfully' });
                 } else if (match = logString.match(errorRegex)) {
                     const { caseId, group, task, duration, details } = match.groups;
                     state.failedGroups++;
                     state.apiErrors++;
-                    addTableRow({ caseId, group, task: task.split('|')[0], status: 'Failed', duration, details: details.trim() });
+                    addTableRow({ caseId, group, task: task.split('|')[0], status: 'Failed', duration: duration.replace('s', ''), details: details.trim() });
                 } else if (match = logString.match(totalGroupsRegex)) {
                     state.totalGroups = parseInt(match[1], 10);
                 } else if (match = logString.match(correctionRegex)) {
@@ -327,7 +352,6 @@
                 eventSource.onerror = (err) => {
                     console.error("EventSource failed:", err);
                     errorDiv.classList.remove('hidden');
-                    // MODIFICATION: Persist UI state by only showing a message.
                     reconnectMessage.textContent = 'Connection lost. Displayed data is the last known state. Attempting to reconnect in 5 seconds...';
                     eventSource.close();
                     setTimeout(connect, 5000); 

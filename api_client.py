@@ -95,8 +95,11 @@ class APIClient:
                 if hasattr(e, 'json_data'):
                         raw_response_content = e.json_data
                 log.warning(f"[{context}] Pydantic validation failed. This will trigger the correction logic. Error: {e}")
+
+                log.info(f"[{context}] RAW FAILED RESPONSE FROM LLM:\n---START---\n{raw_response_content}\n---END---")
+                
                 return {"error": f"Schema Validation Error: {str(e)}", "raw_response": raw_response_content}
-            
+
             except (APIConnectionError, APIStatusError) as e:
                 # Handle network errors separately
                 duration = time.perf_counter() - start_time

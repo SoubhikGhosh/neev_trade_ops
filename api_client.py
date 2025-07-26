@@ -43,8 +43,13 @@ class APIClient:
         return [{"role": "user", "content": content_parts}]
 
     async def call_llm_with_parsing(
-        self, prompt_text: str, document_files: List[Dict], response_schema: Type[BaseModel],
-        context: str, model_override: str = None
+        self, 
+        prompt_text: str, 
+        document_files: List[Dict], 
+        response_schema: Type[BaseModel],
+        context: str, 
+        is_correction: bool = False, # Parameter to indicate a correction call
+        model_override: str = None
     ) -> Union[BaseModel, Dict]:
         """
         Forces the LLM to return a specific Pydantic schema using the response_format parameter.
@@ -54,10 +59,15 @@ class APIClient:
             model_to_use = model_override or API_MODEL
             messages = self._prepare_request_messages(prompt_text, document_files)
             
-            log.info(f"[{context}] Calling model '{model_to_use}' with {len(document_files)} page(s) using response_format.")
+            log_message = f"[{context}] Calling model '{model_to_use}' with {len(document_files)} page(s) using response_format."
+            if is_correction:
+                log_message += " (Correction Attempt)"
+            log.info(log_message)
+
             start_time = time.perf_counter()
             
-            for attempt in range(API_MAX_RETRIES):
+            # The retry loop is now simplified as the correction logic is handled outside
+            for attempt in range(API_MAX_RETRIES if not is_correction else 1): # Only retry network errors for corrections
                 response = None
                 try:
                     response = await self._client.beta.chat.completions.parse(
@@ -84,21 +94,22 @@ class APIClient:
                     return parsed_response
 
                 except (APIConnectionError, APIStatusError) as e:
-                    log.warning(f"[{context}] Network/API error on attempt {attempt + 1}/{API_MAX_RETRIES}: {e}. Retrying...")
-                    if attempt == API_MAX_RETRIES - 1:
+                    log.warning(f"[{context}] Network/API error on attempt {attempt + 1}: {e}. Retrying...")
+                    if attempt == (API_MAX_RETRIES if not is_correction else 1) - 1:
                         duration = time.perf_counter() - start_time
                         log.error(f"[{context}] API call failed after all retries. Duration: {duration:.2f}s: {e}")
                         return {"error": f"API Error after retries: {str(e)}", "raw_response": str(e)}
 
-                except (ValidationError, IndexError, KeyError, TypeError) as e:
-                    log.warning(f"[{context}] Recoverable parsing/validation error on attempt {attempt + 1}/{API_MAX_RETRIES}: {e}. Retrying...")
-                    if attempt == API_MAX_RETRIES - 1:
-                        duration = time.perf_counter() - start_time
-                        log.error(f"[{context}] Final attempt failed with validation error. Duration: {duration:.2f}s: {e}")
-                        raw_response_content = "Response was empty or did not contain valid content."
-                        if response and response.choices and response.choices[0].message:
-                           raw_response_content = response.choices[0].message.content
-                        return {"error": f"Schema Validation Error: {str(e)}", "raw_response": raw_response_content}
+                except ValidationError as e:
+                    # This is the critical JSON validation error. We now capture the raw response.
+                    duration = time.perf_counter() - start_time
+                    log.warning(f"[{context}] Validation error on attempt {attempt + 1}: {e}. This will trigger correction logic.")
+                    raw_response_content = "Could not retrieve raw response."
+                    # The raw response is now on the exception object itself with recent library versions
+                    if hasattr(e, 'json_data'):
+                         raw_response_content = e.json_data
+                    
+                    return {"error": f"Schema Validation Error: {str(e)}", "raw_response": raw_response_content}
                 
                 except Exception as e:
                     duration = time.perf_counter() - start_time

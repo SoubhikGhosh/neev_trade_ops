@@ -47,7 +47,7 @@ def _group_files_by_base_name(folder_path: Path) -> Dict[str, List[Dict]]:
 
 async def _classify_document_type(job_id: str, case_id: str, base_name: str, document_files: List[Dict], acceptable_types: List[str]):
     context = f"Job:{job_id}|Case:{case_id}|Group:'{base_name}'|Task:Classification"
-    sorted_docs = _prepare_document_files(document_files)
+    sorted_docs = _prepare__document_files(document_files)
     prompt = CLASSIFICATION_PROMPT_TEMPLATE.format(
         num_pages=len(sorted_docs),
         acceptable_types_str=", ".join([f"'{t}'" for t in acceptable_types])
@@ -55,8 +55,13 @@ async def _classify_document_type(job_id: str, case_id: str, base_name: str, doc
     class_result = await api_client.call_llm_with_parsing(
         prompt, sorted_docs, ClassificationResponse, context=context
     )
-    return class_result.model_dump() if isinstance(class_result, ClassificationResponse) else \
-           {"error": class_result.get("error", "Unknown classification failure.")}
+    # This check is now robust because call_llm_with_parsing returns the object on success
+    if isinstance(class_result, ClassificationResponse):
+        return class_result.model_dump()
+    else:
+        # It's an error dictionary
+        return {"error": class_result.get("error", "Unknown classification failure.")}
+
 
 async def _extract_data_from_document(
     job_id: str, case_id: str, base_name: str, document_files: List[Dict], classified_doc_type: str,
@@ -67,18 +72,19 @@ async def _extract_data_from_document(
     """
     context = f"Job:{job_id}|Case:{case_id}|Group:'{base_name}'|Task:Extraction"
     sorted_docs = _prepare_document_files(document_files)
-    
+
     field_list_str = "\n".join([f"- {f['name']}: {f['description']}" for f in fields_to_extract])
-    
+
     # --- Initial Extraction Attempt ---
     initial_prompt = EXTRACTION_PROMPT_TEMPLATE.format(
         doc_type=classified_doc_type, case_id=case_id, num_pages=len(sorted_docs), field_list_str=field_list_str
     )
-    
+
+    # Use the 'is_correction' parameter to differentiate initial vs. correction calls
     response_data = await api_client.call_llm_with_parsing(
-        initial_prompt, sorted_docs, extraction_schema, context=context
+        initial_prompt, sorted_docs, extraction_schema, context, is_correction=False
     )
-    
+
     # If successful on the first try, return the data
     if isinstance(response_data, BaseModel):
         return response_data.model_dump()
@@ -91,18 +97,19 @@ async def _extract_data_from_document(
         correction_context = f"{context}|CorrectionAttempt:{i+1}"
         log.info(f"[{correction_context}] Running correction loop.")
         
+        # Get the raw, invalid output from the last failed attempt
         failed_output = last_error_info.get("raw_response", "No raw output from previous attempt.")
         
         correction_prompt = CORRECTION_PROMPT_TEMPLATE.format(
             doc_type=classified_doc_type,
             case_id=case_id,
-            failed_output=failed_output,
+            failed_output=failed_output, # Provide the bad JSON to be fixed
             field_list_str=field_list_str
         )
         
         # Call the LLM again with the correction prompt
         corrected_response = await api_client.call_llm_with_parsing(
-            correction_prompt, sorted_docs, extraction_schema, context=correction_context
+            correction_prompt, sorted_docs, extraction_schema, correction_context, is_correction=True
         )
         
         # If correction is successful, return the data

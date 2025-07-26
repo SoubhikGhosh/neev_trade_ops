@@ -20,7 +20,6 @@ from api_client import APIClient
 from schemas import ClassificationResponse, create_extraction_model, JobStatus
 
 api_client = APIClient()
-# MODIFICATION: Define a semaphore for controlled concurrency. Adjust the value as needed.
 PROCESSING_SEMAPHORE = asyncio.Semaphore(10)
 
 def _append_to_csv(results_list: List[Dict], output_path: Path, column_order: List[str]):
@@ -47,7 +46,8 @@ def _group_files_by_base_name(folder_path: Path) -> Dict[str, List[Dict]]:
 
 async def _classify_document_type(job_id: str, case_id: str, base_name: str, document_files: List[Dict], acceptable_types: List[str]):
     context = f"Job:{job_id}|Case:{case_id}|Group:'{base_name}'|Task:Classification"
-    sorted_docs = _prepare__document_files(document_files)
+    sorted_docs = _prepare_document_files(document_files)
+
     prompt = CLASSIFICATION_PROMPT_TEMPLATE.format(
         num_pages=len(sorted_docs),
         acceptable_types_str=", ".join([f"'{t}'" for t in acceptable_types])
@@ -55,11 +55,10 @@ async def _classify_document_type(job_id: str, case_id: str, base_name: str, doc
     class_result = await api_client.call_llm_with_parsing(
         prompt, sorted_docs, ClassificationResponse, context=context
     )
-    # This check is now robust because call_llm_with_parsing returns the object on success
+    
     if isinstance(class_result, ClassificationResponse):
         return class_result.model_dump()
     else:
-        # It's an error dictionary
         return {"error": class_result.get("error", "Unknown classification failure.")}
 
 
@@ -75,21 +74,17 @@ async def _extract_data_from_document(
 
     field_list_str = "\n".join([f"- {f['name']}: {f['description']}" for f in fields_to_extract])
 
-    # --- Initial Extraction Attempt ---
     initial_prompt = EXTRACTION_PROMPT_TEMPLATE.format(
         doc_type=classified_doc_type, case_id=case_id, num_pages=len(sorted_docs), field_list_str=field_list_str
     )
 
-    # Use the 'is_correction' parameter to differentiate initial vs. correction calls
     response_data = await api_client.call_llm_with_parsing(
-        initial_prompt, sorted_docs, extraction_schema, context, is_correction=False
+        initial_prompt, sorted_docs, extraction_schema, context
     )
 
-    # If successful on the first try, return the data
     if isinstance(response_data, BaseModel):
         return response_data.model_dump()
 
-    # --- Self-Correction Loop ---
     log.warning(f"[{context}] Initial extraction failed. Starting self-correction attempts...")
     
     last_error_info = response_data
@@ -97,36 +92,31 @@ async def _extract_data_from_document(
         correction_context = f"{context}|CorrectionAttempt:{i+1}"
         log.info(f"[{correction_context}] Running correction loop.")
         
-        # Get the raw, invalid output from the last failed attempt
         failed_output = last_error_info.get("raw_response", "No raw output from previous attempt.")
         
         correction_prompt = CORRECTION_PROMPT_TEMPLATE.format(
             doc_type=classified_doc_type,
             case_id=case_id,
-            failed_output=failed_output, # Provide the bad JSON to be fixed
+            failed_output=failed_output,
             field_list_str=field_list_str
         )
         
-        # Call the LLM again with the correction prompt
         corrected_response = await api_client.call_llm_with_parsing(
             correction_prompt, sorted_docs, extraction_schema, correction_context, is_correction=True
         )
         
-        # If correction is successful, return the data
         if isinstance(corrected_response, BaseModel):
             log.info(f"[{correction_context}] Self-correction successful.")
             return corrected_response.model_dump()
         
-        # Otherwise, update the error and loop again
         last_error_info = corrected_response
 
-    # If all correction attempts fail
     final_error_msg = f"Extraction failed after {JSON_CORRECTION_ATTEMPTS + 1} attempts. Final error: {last_error_info.get('error')}"
     log.error(f"[{context}] {final_error_msg}")
     return {"_error": final_error_msg}
 
 async def process_case_group(job_id: str, task_args: tuple):
-    async with PROCESSING_SEMAPHORE: # Wait for a free slot to run
+    async with PROCESSING_SEMAPHORE:
         case_id, base_name, document_files, acceptable_types = task_args
 
         class_result = await _classify_document_type(job_id, case_id, base_name, document_files, acceptable_types)
@@ -203,7 +193,7 @@ async def process_zip_file_async(job_id: str, zip_file_path: str, job_statuses: 
                     job.details = f"Processed {job.groups_processed}/{job.total_groups}: Group '{result.get('GROUP_Basename', 'N/A')}'"
                     log.info(f"Job {job_id}: {job.details} - Progress: {job.progress_percent:.2f}%")
                 except Exception as e:
-                    job.groups_processed += 1 # Increment even on failure to advance progress
+                    job.groups_processed += 1
                     job.progress_percent = (job.groups_processed / job.total_groups) * 100
                     log.exception(f"Job {job_id}: A processing task failed critically: {e}. Progress: {job.progress_percent:.2f}%")
 

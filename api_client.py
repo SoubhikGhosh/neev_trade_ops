@@ -81,7 +81,7 @@ class APIClient:
                     else:
                          log.info(f"[{context}] LLM call and parsing successful. Duration: {duration:.2f} seconds. Usage data not available.")
 
-                    return parsed_response.model_dump()
+                    return parsed_response
 
                 except (APIConnectionError, APIStatusError) as e:
                     log.warning(f"[{context}] Network/API error on attempt {attempt + 1}/{API_MAX_RETRIES}: {e}. Retrying...")
@@ -111,5 +111,5 @@ class APIClient:
 
     async def close(self):
         if self._client and not self._client.is_closed():
-            await self.close()
+            await self._client.close()
             log.info("Closed OpenAI AsyncClient.")

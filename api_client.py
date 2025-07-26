@@ -52,8 +52,7 @@ class APIClient:
         model_override: str = None
     ) -> Union[BaseModel, Dict]:
         """
-        Forces the LLM to return a specific Pydantic schema using the .parse() method,
-        which includes built-in retries for validation errors.
+        Forces the LLM to return a specific Pydantic schema using the .parse() method.
         """
         async with self._semaphore:
             model_to_use = model_override or API_MODEL
@@ -67,14 +66,13 @@ class APIClient:
             start_time = time.perf_counter()
             
             try:
-                # The .parse() method handles validation and has its own retry logic.
-                # It is the recommended way to enforce a Pydantic schema.
+                # Using .parse() with simplified prompts is the most reliable method.
+                # temperature=0.0 makes the model's output highly deterministic.
                 response = await self._client.beta.chat.completions.parse(
                     model=model_to_use,
                     messages=messages,
                     response_format=response_schema,
-                    temperature=0.0, # Set to 0 for maximum determinism
-                    max_retries=2,   # Use the library's built-in retry for validation errors
+                    temperature=0.0, # CRITICAL: Ensures consistent, non-creative output
                 )
                 
                 parsed_response = response.choices[0].message.parsed
@@ -91,20 +89,19 @@ class APIClient:
                 return parsed_response
 
             except ValidationError as e:
-                # This block will now only be hit if the built-in retries fail.
-                # This is a genuine failure that should be escalated to the self-correction loop.
+                # This is the safety net. If validation fails, this triggers the self-correction loop in processing.py
                 duration = time.perf_counter() - start_time
                 raw_response_content = "Could not retrieve raw response."
                 if hasattr(e, 'json_data'):
                         raw_response_content = e.json_data
-                log.warning(f"[{context}] Pydantic validation failed after all built-in retries. This will trigger the final correction logic. Error: {e}")
-                return {"error": f"Schema Validation Error after retries: {str(e)}", "raw_response": raw_response_content}
+                log.warning(f"[{context}] Pydantic validation failed. This will trigger the correction logic. Error: {e}")
+                return {"error": f"Schema Validation Error: {str(e)}", "raw_response": raw_response_content}
             
             except (APIConnectionError, APIStatusError) as e:
                 # Handle network errors separately
-                log.warning(f"[{context}] Network/API error: {e}.")
                 duration = time.perf_counter() - start_time
-                log.error(f"[{context}] API call failed. Duration: {duration:.2f}s: {e}")
+                log.error(f"[{context}] Network/API error. Duration: {duration:.2f}s: {e}")
+                # We will rely on the main retry loop in processing.py for network issues.
                 return {"error": f"API Error: {str(e)}", "raw_response": str(e)}
 
             except Exception as e:

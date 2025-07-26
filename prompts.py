@@ -25,23 +25,12 @@ CLASSIFICATION_PROMPT_TEMPLATE = """
 high-level summary and a detailed, accurate technical classification for the provided document
 ({num_pages} pages).
 
----
-**Part 1: High-Level Summary**
-Provide a value for the following fields:
-- `image_description`: A one-sentence summary of the document's main purpose, including
-  key entities and values.
-- `image_type`: A general, human-readable classification (e.g., "Request Letter",
-  "Proforma Invoice").
-
----
-**Part 2: Detailed Technical Classification**
-Provide a value for the following fields based on a meticulous analysis:
-- `classified_type`: Strictly classify the document as ONE of the following types:
-  {acceptable_types_str}, or "UNKNOWN".
-- `confidence`: Assign a confidence score for your `classified_type` decision based on
-  the rubric below.
-- `reasoning`: A concise but specific explanation for your `classified_type` decision,
-  referencing key evidence.
+Your response MUST be a JSON object containing the following fields:
+- `image_description`: A one-sentence summary of the document's main purpose.
+- `image_type`: A general classification (e.g., "Request Letter", "Proforma Invoice").
+- `classified_type`: Classify the document as ONE of the following types: {acceptable_types_str}, or "UNKNOWN".
+- `confidence`: A float from 0.0 to 1.0 representing your confidence in the `classified_type`.
+- `reasoning`: A concise explanation for your classification, referencing key evidence.
 
 **Detailed Instructions for `classified_type` Determination:**
 
@@ -85,7 +74,6 @@ structured data precisely as instructed.
 '{case_id}'. Carefully extract the specific data fields listed below. Synthesize information
 across all pages to find the most accurate value for each field.
 
----
 **Output Requirements (Strict):**
 You MUST return a single, flat JSON object. For each field in the list below, you must create
 three keys in your response, following this pattern:
@@ -94,8 +82,6 @@ three keys in your response, following this pattern:
 3.  `FIELD_NAME_Reasoning`: The explanation for the extraction.
 
 **IMPORTANT: Your entire response must be ONLY the JSON object, with no introductory text, explanations, or apologies.**
-
----
 **Detailed Instructions for Field Values:**
 
 * **For `_Value` fields:**

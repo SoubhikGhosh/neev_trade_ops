@@ -4,8 +4,6 @@ import httpx
 import asyncio
 import base64
 import time
-import re
-import json
 from typing import List, Dict, Type, Union
 
 from openai import AsyncOpenAI, APIStatusError, APIConnectionError
@@ -15,31 +13,6 @@ from utils import log, get_mime_type
 from config import (
     API_BASE_URL, API_KEY, API_MODEL, API_TIMEOUT, API_MAX_RETRIES, API_CONCURRENCY_LIMIT, EXPONENTIAL_BACKOFF_FACTOR
 )
-
-def _sanitize_llm_output(raw_response: str) -> str:
-    """
-    Cleans the raw string from an LLM to make it valid JSON.
-    - Extracts content between the first '{' and the last '}'.
-    - Removes trailing commas that cause validation errors.
-    """
-    if not isinstance(raw_response, str):
-        return "" # Return empty string if input is not a string
-
-    # Find the first opening brace and the last closing brace
-    try:
-        start_index = raw_response.find('{')
-        end_index = raw_response.rfind('}')
-        if start_index == -1 or end_index == -1 or start_index > end_index:
-            return raw_response # Return original if no valid JSON object is found
-
-        json_block = raw_response[start_index : end_index + 1]
-
-        # Use regex to remove trailing commas before closing braces/brackets
-        cleaned_json = re.sub(r",\s*([}\]])", r"\1", json_block)
-        
-        return cleaned_json
-    except Exception:
-        return raw_response # Failsafe in case of unexpected errors
 
 class APIClient:
     """A thread-safe, async client for the LLM API using the response_format feature."""
@@ -79,83 +52,65 @@ class APIClient:
         model_override: str = None
     ) -> Union[BaseModel, Dict]:
         """
-        Forces the LLM to return a specific Pydantic schema using the response_format parameter.
-        Includes resilience with a custom retry loop for network and recoverable application errors.
+        Forces the LLM to return a specific Pydantic schema using the .parse() method,
+        which includes built-in retries for validation errors.
         """
         async with self._semaphore:
             model_to_use = model_override or API_MODEL
             messages = self._prepare_request_messages(prompt_text, document_files)
             
-            log_message = f"[{context}] Calling model '{model_to_use}' with {len(document_files)} page(s) using response_format."
+            log_message = f"[{context}] Calling model '{model_to_use}' with {len(document_files)} page(s) using .parse()."
             if is_correction:
                 log_message += " (Correction Attempt)"
             log.info(log_message)
 
             start_time = time.perf_counter()
             
-            for attempt in range(API_MAX_RETRIES if not is_correction else 1):
-                response = None
-                raw_response_for_correction = None
-                try:
-                    # The raw response is stored on the exception object, so we prepare it here
-                    response = await self._client.chat.completions.create(
-                        model=model_to_use,
-                        messages=messages,
-                        response_format={"type": "json_object"},
-                        temperature=0.0,
-                    )
-                    raw_response_for_correction = response.choices[0].message.content
-                    parsed_model = response_schema.model_validate_json(raw_response_for_correction)
-
-                    duration = time.perf_counter() - start_time
-
-                    if response.usage:
-                        log.info(f"[{context}] LLM call successful. Duration: {duration:.2f}s. "
-                                 f"Tokens -> Prompt: {response.usage.prompt_tokens}, "
-                                 f"Completion: {response.usage.completion_tokens}, "
-                                 f"Total: {response.usage.total_tokens}")
-                    else:
-                         log.info(f"[{context}] LLM call and parsing successful. Duration: {duration:.2f}s. Usage data not available.")
-
-                    return parsed_model
-
-                except (APIConnectionError, APIStatusError) as e:
-                    log.warning(f"[{context}] Network/API error on attempt {attempt + 1}: {e}. Retrying...")
-                    if attempt == (API_MAX_RETRIES if not is_correction else 1) - 1:
-                        duration = time.perf_counter() - start_time
-                        log.error(f"[{context}] API call failed after all retries. Duration: {duration:.2f}s: {e}")
-                        return {"error": f"API Error after retries: {str(e)}", "raw_response": str(e)}
-
-                except ValidationError as e:
-                    duration = time.perf_counter() - start_time
-                    log.warning(f"[{context}] Initial Pydantic validation failed: {e}.")
-                    
-                    # Ensure we have the raw response string to sanitize
-                    if raw_response_for_correction is None:
-                        log.error(f"[{context}] Could not get raw response for sanitization. This should not happen.")
-                        return {"error": "Validation failed without a raw response to process."}
-
-                    # --- Programmatic Sanitization Attempt ---
-                    log.info(f"[{context}] Attempting programmatic sanitization of the failed JSON.")
-                    sanitized_output = _sanitize_llm_output(raw_response_for_correction)
-                    
-                    try:
-                        # Retry parsing with the cleaned output
-                        parsed_model = response_schema.model_validate_json(sanitized_output)
-                        log.info(f"[{context}] Programmatic sanitization successful!")
-                        return parsed_model
-                    except (ValidationError, json.JSONDecodeError) as sanitize_error:
-                        log.warning(f"[{context}] Programmatic sanitization failed: {sanitize_error}. This will trigger correction logic.")
-                        return {"error": f"Schema Validation Error after sanitization: {str(e)}", "raw_response": raw_response_for_correction}
-
-                except Exception as e:
-                    duration = time.perf_counter() - start_time
-                    log.error(f"[{context}] Unexpected non-recoverable error. Duration: {duration:.2f}s: {e.__class__.__name__} - {e}")
-                    return {"error": f"Application Error: {str(e)}"}
+            try:
+                # The .parse() method handles validation and has its own retry logic.
+                # It is the recommended way to enforce a Pydantic schema.
+                response = await self._client.beta.chat.completions.parse(
+                    model=model_to_use,
+                    messages=messages,
+                    response_format=response_schema,
+                    temperature=0.0, # Set to 0 for maximum determinism
+                    max_retries=2,   # Use the library's built-in retry for validation errors
+                )
                 
-                await asyncio.sleep(EXPONENTIAL_BACKOFF_FACTOR ** attempt)
+                parsed_response = response.choices[0].message.parsed
+                duration = time.perf_counter() - start_time
+
+                if response.usage:
+                    log.info(f"[{context}] LLM call successful. Duration: {duration:.2f}s. "
+                                f"Tokens -> Prompt: {response.usage.prompt_tokens}, "
+                                f"Completion: {response.usage.completion_tokens}, "
+                                f"Total: {response.usage.total_tokens}")
+                else:
+                    log.info(f"[{context}] LLM call and parsing successful. Duration: {duration:.2f}s. Usage data not available.")
+
+                return parsed_response
+
+            except ValidationError as e:
+                # This block will now only be hit if the built-in retries fail.
+                # This is a genuine failure that should be escalated to the self-correction loop.
+                duration = time.perf_counter() - start_time
+                raw_response_content = "Could not retrieve raw response."
+                if hasattr(e, 'json_data'):
+                        raw_response_content = e.json_data
+                log.warning(f"[{context}] Pydantic validation failed after all built-in retries. This will trigger the final correction logic. Error: {e}")
+                return {"error": f"Schema Validation Error after retries: {str(e)}", "raw_response": raw_response_content}
             
-            return {"error": "All retry attempts failed."}
+            except (APIConnectionError, APIStatusError) as e:
+                # Handle network errors separately
+                log.warning(f"[{context}] Network/API error: {e}.")
+                duration = time.perf_counter() - start_time
+                log.error(f"[{context}] API call failed. Duration: {duration:.2f}s: {e}")
+                return {"error": f"API Error: {str(e)}", "raw_response": str(e)}
+
+            except Exception as e:
+                duration = time.perf_counter() - start_time
+                log.error(f"[{context}] Unexpected non-recoverable error. Duration: {duration:.2f}s: {e.__class__.__name__} - {e}")
+                return {"error": f"Application Error: {str(e)}"}
 
     async def close(self):
         if self._client and not self._client.is_closed():
